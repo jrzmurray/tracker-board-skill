@@ -27,6 +27,8 @@ trackerboard show
 
 Every write prints the `ArtifactData` call that publishes the change. See [skills/trackerboard/SKILL.md](skills/trackerboard/SKILL.md) for the agent workflow, including first publish and version conflicts.
 
+[skills/trackerboard/AGENTS.md](skills/trackerboard/AGENTS.md) is a short, harness-neutral version to include in a project's agent instructions. In Claude Code, add `@~/.claude/skills/trackerboard/AGENTS.md` to the project's `CLAUDE.md` (the installed skill already loads on demand, so this is only for always-on rules such as setting `--owner`).
+
 ## Data model
 
 ```

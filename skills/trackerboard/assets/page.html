@@ -194,8 +194,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   }
 
   // One panel per wave; inside it, one table per lane (the phases' lane field,
-  // in order of first use). The first lane's header doubles as the panel
-  // header when the wave is the board's only, untitled one.
+  // in order of first use). On a board with one untitled wave the lane
+  // headers are the panel's only headers.
   function waves(b) {
     const statusOf = new Map(phasesOf(b).map(({ phase }) => [keyOf(phase.id), phase.status]));
     const single = b.waves.length === 1 && !b.waves[0].title && !b.waves[0].notes;
@@ -218,12 +218,12 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       if (filter && !groups.length) return "";
       const laneHead = (g, tag) => `<hr class="lanerule"><div class="wavehead lanehead"><${tag}>${g.lane ? `Lane ${esc(g.lane)}` : "No lane"}</${tag}>${tally(g.ps)}</div><hr class="lanerule">`;
       const tables = groups.map((g, i) => `<div class="lanegroup">
-          ${single && i === 0 ? "" : laneHead(g, single ? "h2" : "h3")}
+          ${laneHead(g, single ? "h2" : "h3")}
           ${cols}
           ${g.rows.map((p) => phaseRow(b, p, statusOf)).join("")}
         </div>`).join("");
       const head = single
-        ? (groups.length ? laneHead(groups[0], "h2") : `<div class="wavehead"><h2>Phases</h2>${tally(w.phases)}</div>`)
+        ? (groups.length ? "" : `<div class="wavehead"><h2>Phases</h2>${tally(w.phases)}</div>`)
         : `<div class="wavehead"><span class="wid">${esc(w.id)}</span><h2>${inline(w.title || "Wave " + w.id)}</h2>${tally(w.phases)}</div>`;
       return `<section class="panel" aria-label="Wave ${esc(w.id)}">
         ${head}

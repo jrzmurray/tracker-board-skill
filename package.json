@@ -1,0 +1,16 @@
+{
+  "name": "tracker-board",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic CRUD for phase/wave tracker boards published as claude.ai artifacts",
+  "type": "module",
+  "bin": {
+    "trackerboard": "skills/trackerboard/scripts/trackerboard.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

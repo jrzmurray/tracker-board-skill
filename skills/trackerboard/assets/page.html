@@ -1,0 +1,317 @@
+<title>Tracker Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@500;700&family=Public+Sans:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; summary strip, waves of phase rows, dependency graph, log. */
+:root{
+  --bg:#eef1f4;--paper:#fbfcfd;--ink:#16202b;--muted:#5a6878;--rule:#cfd7e0;--soft:#e3e8ee;
+  --accent:#2b59c3;--accent-tint:#dde6f8;
+  --todo:#5a6878;--todo-bg:#e6eaef;--active:#9a5b00;--active-bg:#fbecd2;--review:#6a3fb5;--review-bg:#ece4f8;
+  --waiting:#4c6070;--waiting-bg:#e2e9ee;--blocked:#b3261e;--blocked-bg:#f9e0dd;--done:#23744a;--done-bg:#dcf0e3;
+  --ongoing:#1f6f86;--ongoing-bg:#dbeff4;--external:#7a5a2e;--external-bg:#f1e8da;--dropped:#8792a0;--dropped-bg:#eceff2;
+  --display:"Schibsted Grotesk",ui-sans-serif,system-ui,sans-serif;
+  --body:"Public Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
+  --accent:#86a8ff;--accent-tint:#22304d;
+  --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
+  --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
+  --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
+  --accent:#86a8ff;--accent-tint:#22304d;
+  --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
+  --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
+  --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
+  color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);margin:0;padding-block:28px 64px;padding-inline:max(16px,3vw)}
+main{max-width:1180px;margin:0 auto;display:grid;gap:24px}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+code{font-family:var(--mono);font-size:.86em;background:var(--soft);padding:1px 5px;border-radius:3px;overflow-wrap:anywhere}
+header{display:grid;gap:6px}
+.eyebrow{font:600 12px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font:700 clamp(24px,3.4vw,32px)/1.15 var(--display);margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
+.lede{color:var(--muted);max-width:72ch;margin:0}
+.stamp{font:12px var(--mono);color:var(--muted)}
+.panel{background:var(--paper);border:1px solid var(--rule);border-radius:8px;padding:18px 20px;min-width:0}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--soft)}
+.bar span{display:block;height:100%}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.chip{display:inline-flex;align-items:baseline;gap:6px;font:12px var(--mono);border:1px solid var(--rule);background:var(--paper);color:var(--ink);border-radius:999px;padding:3px 10px;cursor:pointer}
+.chip b{font-variant-numeric:tabular-nums}
+.chip[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-tint)}
+.chip i{width:8px;height:8px;border-radius:50%;display:inline-block;align-self:center}
+.wavehead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:10px}
+.wavehead .wid{font:600 12px var(--mono);color:var(--accent);background:var(--accent-tint);padding:1px 7px;border-radius:3px}
+.wavehead .count{font:12px var(--mono);color:var(--muted);margin-left:auto}
+.wavenotes{color:var(--muted);font-size:14px;margin:-4px 0 10px;max-width:80ch}
+.cols,.phase>summary{display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(130px,1fr) minmax(90px,.7fr) minmax(110px,.8fr) 48px;gap:12px;align-items:start}
+.cols{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding:0 10px 6px;border-bottom:1px solid var(--rule)}
+.phase{border-bottom:1px solid var(--soft)}
+.phase:last-child{border-bottom:0}
+.phase>summary{list-style:none;cursor:pointer;padding:10px;border-radius:6px}
+.phase>summary::-webkit-details-marker{display:none}
+.phase>summary:hover{background:var(--soft)}
+.phase.flash>summary{background:var(--accent-tint)}
+.pid{font:600 13px var(--mono)}
+.ptitle{display:block;color:var(--muted);font-size:13px;line-height:1.35}
+.lane{font:11px var(--mono);color:var(--muted);border:1px solid var(--rule);border-radius:3px;padding:0 5px;margin-left:6px;white-space:nowrap}
+.pill{display:inline-block;font:600 11px/1.6 var(--mono);letter-spacing:.03em;padding:1px 8px;border-radius:3px;white-space:nowrap}
+.snote{display:block;font-size:13px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+.deps{font:12px var(--mono);overflow-wrap:anywhere}
+.deps a{text-decoration:none}
+.deps .ok{color:var(--done)}
+.prc{font:12px var(--mono);overflow-wrap:anywhere}
+.chev{justify-self:end;color:var(--muted);font:12px var(--mono);transition:transform .15s}
+.phase[open] .chev{transform:rotate(90deg)}
+.body{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));padding:4px 10px 16px}
+.field h3{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+.field{min-width:0;font-size:14px}
+.field p{margin:0 0 6px;max-width:75ch}
+.field ul{margin:0;padding-left:18px}
+.tools{display:flex;gap:8px;flex-wrap:wrap}
+.btn{font:12px var(--mono);background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:4px 10px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.graphwrap{overflow-x:auto;margin-top:8px}
+.graphwrap svg text{font-family:var(--mono)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin-top:10px}
+.log{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.log li{display:grid;grid-template-columns:150px 1fr;gap:12px;font-size:14px}
+.log time{font:12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums;padding-top:2px}
+.notes p{margin:0 0 8px;max-width:80ch}
+.empty{text-align:center;padding:48px 20px;color:var(--muted)}
+.empty h2{color:var(--ink);margin-bottom:8px}
+.status-todo{background:var(--todo-bg);color:var(--todo)}.status-active{background:var(--active-bg);color:var(--active)}
+.status-review{background:var(--review-bg);color:var(--review)}.status-waiting{background:var(--waiting-bg);color:var(--waiting)}
+.status-blocked{background:var(--blocked-bg);color:var(--blocked)}.status-done{background:var(--done-bg);color:var(--done)}
+.status-ongoing{background:var(--ongoing-bg);color:var(--ongoing)}.status-external{background:var(--external-bg);color:var(--external)}
+.status-dropped{background:var(--dropped-bg);color:var(--dropped)}
+@media (max-width:720px){
+  .cols{display:none}
+  .phase>summary{grid-template-columns:1fr auto;grid-template-areas:"id chev" "st st" "dp pr"}
+  .phase>summary>:nth-child(1){grid-area:id}.phase>summary>:nth-child(2){grid-area:st}
+  .phase>summary>:nth-child(3){grid-area:dp}.phase>summary>:nth-child(4){grid-area:pr}.phase>summary>:nth-child(5){grid-area:chev}
+  .log li{grid-template-columns:1fr;gap:2px}
+}
+@media (prefers-reduced-motion:reduce){.chev{transition:none}}
+</style>
+<main id="app">
+  <header>
+    <div class="eyebrow" id="eyebrow">Tracker board</div>
+    <h1 id="title">Loading board</h1>
+  </header>
+  <section class="panel empty" id="empty">
+    <h2>Waiting for board data</h2>
+    <p>Phases appear here once the board is pushed with <code>trackerboard push</code>.</p>
+  </section>
+</main>
+<script type="application/json" id="tb-data">null</script>
+<script>
+(() => {
+  const STATUS = ["active","review","blocked","waiting","todo","ongoing","external","done","dropped"];
+  const LABEL = {todo:"not started",active:"in progress",review:"in review",waiting:"waiting",blocked:"blocked",done:"done",ongoing:"ongoing",external:"external",dropped:"dropped"};
+  const app = document.getElementById("app");
+  let board = null, filter = null, openIds = new Set();
+  try { filter = localStorage.getItem("tb-filter") || null; } catch {}
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  const keyOf = (s) => String(s).toLowerCase();
+  const domId = (s) => "p-" + String(s).replace(/[^A-Za-z0-9_-]/g, "_");
+
+  function inline(text) {
+    const repo = (board && board.repoUrl || "").replace(/\/+$/, "");
+    const codes = [];
+    let s = esc(text).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; });
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, p, u) => `${p}<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\//, "").slice(0, 60)}</a>`);
+    if (repo) s = s.replace(/(^|[\s(·,;])#(\d{1,7})\b/g, (_, p, n) => `${p}<a href="${repo}/pull/${n}" target="_blank" rel="noopener">#${n}</a>`);
+    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
+  }
+  function md(text) {
+    if (!text) return "";
+    return String(text).trim().split(/\n{2,}/).map((block) => {
+      const lines = block.split("\n");
+      if (lines.every((l) => /^\s*[-*] /.test(l))) return "<ul>" + lines.map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ""))}</li>`).join("") + "</ul>";
+      return `<p>${lines.map(inline).join("<br>")}</p>`;
+    }).join("");
+  }
+  const pill = (st) => `<span class="pill status-${esc(st)}">${esc(LABEL[st] || st)}</span>`;
+  const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? esc(iso) : d.toISOString().slice(0, 16).replace("T", " ") + "Z"; };
+
+  function phasesOf(b) { return b.waves.flatMap((w) => w.phases.map((p) => ({ wave: w, phase: p }))); }
+
+  function summary(b) {
+    const all = phasesOf(b), n = all.length || 1;
+    const counts = Object.fromEntries(STATUS.map((s) => [s, 0]));
+    all.forEach(({ phase }) => counts[phase.status] = (counts[phase.status] || 0) + 1);
+    const bar = STATUS.filter((s) => counts[s]).map((s) => `<span style="width:${(counts[s] / n) * 100}%;background:var(--${s})" title="${LABEL[s]}: ${counts[s]}"></span>`).join("");
+    const chips = STATUS.filter((s) => counts[s]).map((s) =>
+      `<button class="chip" data-filter="${s}" aria-pressed="${filter === s}"><i style="background:var(--${s})"></i>${LABEL[s]} <b>${counts[s]}</b></button>`).join("");
+    return `<section class="panel" aria-label="Status summary"><div class="bar" role="img" aria-label="${all.length} phases by status">${bar}</div><div class="chips">${chips}${filter ? `<button class="chip" data-filter="">show all</button>` : ""}</div></section>`;
+  }
+
+  function phaseRow(b, phase, statusOf) {
+    const deps = phase.deps.length ? phase.deps.map((d) => {
+      const done = ["done", "dropped"].includes(statusOf.get(keyOf(d)));
+      return `<a href="#${domId(d)}" data-jump="${esc(d)}" class="${done ? "ok" : ""}">${esc(d)}${done ? " ✓" : ""}</a>`;
+    }).join(", ") : `<span style="color:var(--muted)">none</span>`;
+    const fields = [["Requirements", phase.req], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v);
+    const body = fields.length ? fields.map(([h, v]) => `<div class="field"><h3>${h}</h3>${md(v)}</div>`).join("") : `<div class="field" style="color:var(--muted)">No details recorded.</div>`;
+    return `<details class="phase" id="${domId(phase.id)}" ${openIds.has(phase.id) ? "open" : ""}>
+      <summary>
+        <div><span class="pid">${esc(phase.id)}</span>${phase.lane ? `<span class="lane">${esc(phase.lane)}</span>` : ""}<span class="ptitle">${inline(phase.title)}</span></div>
+        <div>${pill(phase.status)}${phase.note ? `<span class="snote">${inline(phase.note)}</span>` : ""}</div>
+        <div class="deps">${deps}</div>
+        <div class="prc">${phase.pr ? inline(phase.pr) : `<span style="color:var(--muted)">—</span>`}</div>
+        <span class="chev" aria-hidden="true">▸</span>
+      </summary>
+      <div class="body">${body}</div>
+    </details>`;
+  }
+
+  function waves(b) {
+    const statusOf = new Map(phasesOf(b).map(({ phase }) => [keyOf(phase.id), phase.status]));
+    const single = b.waves.length === 1 && !b.waves[0].title && !b.waves[0].notes;
+    return b.waves.map((w) => {
+      const rows = w.phases.filter((p) => !filter || p.status === filter);
+      if (filter && !rows.length) return "";
+      const done = w.phases.filter((p) => p.status === "done").length;
+      return `<section class="panel" aria-label="Wave ${esc(w.id)}">
+        <div class="wavehead">${single ? `<h2>Phases</h2>` : `<span class="wid">${esc(w.id)}</span><h2>${inline(w.title || "Wave " + w.id)}</h2>`}<span class="count">${done}/${w.phases.length} done</span></div>
+        ${w.notes ? `<div class="wavenotes">${md(w.notes)}</div>` : ""}
+        <div class="cols"><span>Phase</span><span>Status</span><span>Depends on</span><span>PR</span><span></span></div>
+        ${rows.length ? rows.map((p) => phaseRow(b, p, statusOf)).join("") : `<p style="color:var(--muted);margin:10px">No phases yet.</p>`}
+      </section>`;
+    }).join("");
+  }
+
+  // Layered left-to-right DAG: column = longest dependency chain, rows ordered
+  // by a barycenter pass so edges cross less.
+  function graph(b) {
+    const all = phasesOf(b).map(({ phase }) => phase);
+    if (!all.some((p) => p.deps.length)) return "";
+    const byKey = new Map(all.map((p) => [keyOf(p.id), p]));
+    const layer = new Map();
+    const depth = (p, seen = new Set()) => {
+      if (layer.has(p.id)) return layer.get(p.id);
+      if (seen.has(p.id)) return 0;
+      seen.add(p.id);
+      const l = p.deps.reduce((m, d) => byKey.has(keyOf(d)) ? Math.max(m, depth(byKey.get(keyOf(d)), seen) + 1) : m, 0);
+      layer.set(p.id, l);
+      return l;
+    };
+    all.forEach((p) => depth(p));
+    const cols = [];
+    all.forEach((p) => (cols[layer.get(p.id)] ||= []).push(p));
+    const row = new Map();
+    cols.forEach((c, ci) => {
+      if (ci > 0) c.sort((a, z) => bary(a) - bary(z));
+      c.forEach((p, i) => row.set(p.id, i));
+    });
+    function bary(p) {
+      const r = p.deps.map((d) => row.get(byKey.get(keyOf(d))?.id)).filter((x) => x != null);
+      return r.length ? r.reduce((s, x) => s + x, 0) / r.length : 1e6;
+    }
+    const W = 168, H = 42, GX = 56, GY = 14, PAD = 8;
+    const maxRows = Math.max(...cols.map((c) => c.length));
+    const width = cols.length * (W + GX) - GX + PAD * 2, height = maxRows * (H + GY) - GY + PAD * 2;
+    const pos = (p) => {
+      const c = cols[layer.get(p.id)], off = (maxRows - c.length) * (H + GY) / 2;
+      return { x: PAD + layer.get(p.id) * (W + GX), y: PAD + off + row.get(p.id) * (H + GY) };
+    };
+    let edges = "", nodes = "";
+    all.forEach((p) => {
+      const t = pos(p);
+      p.deps.forEach((d) => {
+        const q = byKey.get(keyOf(d)); if (!q) return;
+        const s = pos(q), x1 = s.x + W, y1 = s.y + H / 2, x2 = t.x, y2 = t.y + H / 2, mx = (x1 + x2) / 2;
+        edges += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 6},${y2}" fill="none" stroke="var(--rule)" stroke-width="1.5" marker-end="url(#tb-arrow)"/>`;
+      });
+      const title = String(p.title || "").replace(/[`*]/g, "");
+      const short = title.length > 22 ? title.slice(0, 21) + "…" : title;
+      nodes += `<g class="gnode" data-jump="${esc(p.id)}" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(LABEL[p.status])}">
+        <rect x="${t.x}" y="${t.y}" width="${W}" height="${H}" rx="6" fill="var(--${p.status}-bg)" stroke="var(--${p.status})" stroke-width="1.2"/>
+        <text x="${t.x + 10}" y="${t.y + 17}" font-size="12" font-weight="600" fill="var(--ink)">${esc(p.id.length > 20 ? p.id.slice(0, 19) + "…" : p.id)}</text>
+        <text x="${t.x + 10}" y="${t.y + 32}" font-size="10.5" fill="var(--muted)">${esc(short)}</text>
+        <title>${esc(p.id)} · ${esc(LABEL[p.status])}${title ? " · " + esc(title) : ""}</title></g>`;
+    });
+    const legend = STATUS.filter((s) => all.some((p) => p.status === s)).map((s) => `<span>${pill(s)}</span>`).join("");
+    return `<section class="panel" aria-label="Dependency graph"><h2>Dependency graph</h2>
+      <div class="graphwrap"><svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Phase dependency graph">
+      <defs><marker id="tb-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+      ${edges}${nodes}</svg></div><div class="legend">${legend}</div></section>`;
+  }
+
+  function render() {
+    if (!board) return;
+    document.title = board.title || board.name;
+    const updated = board.updatedAt ? `Updated ${fmtTime(board.updatedAt)}` : "";
+    app.innerHTML = `
+      <header>
+        <div class="eyebrow">${inline(board.subtitle || board.name)}</div>
+        <h1>${inline(board.title || board.name)}</h1>
+        ${board.lede ? `<div class="lede">${md(board.lede)}</div>` : ""}
+        <div class="stamp">${updated}</div>
+      </header>
+      ${summary(board)}
+      <div class="tools"><button class="btn" id="tb-expand">Expand all</button><button class="btn" id="tb-collapse">Collapse all</button></div>
+      ${board.waves.length ? waves(board) : `<section class="panel empty"><h2>No phases yet</h2><p>Add one with <code>trackerboard insert --phase P1 --title "…"</code>.</p></section>`}
+      ${graph(board)}
+      ${board.log && board.log.length ? `<section class="panel" aria-label="Change log"><h2 style="margin-bottom:10px">Recent changes</h2><ul class="log">${board.log.map((e) => `<li><time datetime="${esc(e.at)}">${fmtTime(e.at)}</time><div>${inline(e.text)}</div></li>`).join("")}</ul></section>` : ""}
+      ${board.notes ? `<section class="panel notes" aria-label="Notes"><h2 style="margin-bottom:10px">Notes</h2>${md(board.notes)}</section>` : ""}`;
+  }
+
+  app.addEventListener("click", (e) => {
+    const f = e.target.closest("[data-filter]");
+    if (f) { const v = f.dataset.filter || null; filter = filter === v ? null : v; try { filter ? localStorage.setItem("tb-filter", filter) : localStorage.removeItem("tb-filter"); } catch {} render(); return; }
+    if (e.target.id === "tb-expand" || e.target.id === "tb-collapse") {
+      const open = e.target.id === "tb-expand";
+      app.querySelectorAll("details.phase").forEach((d) => { d.open = open; });
+      return;
+    }
+    const j = e.target.closest("[data-jump]");
+    if (j) { e.preventDefault(); jump(j.dataset.jump); }
+  });
+  app.addEventListener("keydown", (e) => {
+    const j = e.target.closest && e.target.closest(".gnode");
+    if (j && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); jump(j.dataset.jump); }
+  });
+  app.addEventListener("toggle", (e) => {
+    const d = e.target;
+    if (!d.classList || !d.classList.contains("phase")) return;
+    const id = phasesOf(board).map(({ phase }) => phase.id).find((p) => domId(p) === d.id);
+    if (id) d.open ? openIds.add(id) : openIds.delete(id);
+  }, true);
+  function jump(id) {
+    let el = document.getElementById(domId(id));
+    if (!el && filter) { filter = null; render(); el = document.getElementById(domId(id)); }
+    if (!el) return;
+    el.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    el.classList.add("flash");
+    setTimeout(() => el.classList.remove("flash"), 1400);
+  }
+
+  try {
+    const embedded = JSON.parse(document.getElementById("tb-data").textContent);
+    if (embedded) { board = embedded; render(); }
+  } catch {}
+
+  if (window.claude && typeof window.claude.use === "function") {
+    window.claude.use("db").then((db) => {
+      if (!db) return;
+      db.doc("board/state").onSnapshot((snap) => {
+        if (!snap.exists) return;
+        board = snap.data();
+        render();
+      }, () => {});
+    });
+  }
+})();
+</script>

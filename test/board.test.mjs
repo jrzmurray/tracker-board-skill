@@ -1,0 +1,119 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import * as B from "../skills/trackerboard/scripts/lib/board.mjs";
+
+const ids = (w) => w.phases.map((p) => p.id);
+
+function board(...phaseIds) {
+  const b = B.newBoard("t");
+  for (const id of phaseIds) B.insertPhase(b, id);
+  return b;
+}
+
+test("sub-phase lands after its parent even when the next phase exists", () => {
+  const b = board("P0", "P1", "P2");
+  B.insertPhase(b, "P0.1");
+  B.insertPhase(b, "P0-2");
+  B.insertPhase(b, "p1.1");
+  assert.deepEqual(ids(b.waves[0]), ["P0", "P0.1", "P0-2", "P1", "p1.1", "P2"]);
+});
+
+test("siblings under a parent keep natural order, nested ids go inside their block", () => {
+  const b = board("P0", "P1");
+  B.insertPhase(b, "P0.2");
+  B.insertPhase(b, "P0.10");
+  B.insertPhase(b, "P0.1");
+  B.insertPhase(b, "P0.1.1");
+  assert.deepEqual(ids(b.waves[0]), ["P0", "P0.1", "P0.1.1", "P0.2", "P0.10", "P1"]);
+});
+
+test("top-level ids slot by natural order within their stem; other stems append", () => {
+  const b = board("A-1", "A-3", "G1");
+  B.insertPhase(b, "A-2");
+  B.insertPhase(b, "A-10");
+  B.insertPhase(b, "X1");
+  assert.deepEqual(ids(b.waves[0]), ["A-1", "A-2", "A-3", "A-10", "G1", "X1"]);
+});
+
+test("insert never overwrites", () => {
+  const b = board("P0");
+  assert.throws(() => B.insertPhase(b, "p0"), /already exists/);
+});
+
+test("wave inference: parent, prefix, single wave, ambiguity", () => {
+  const b = B.newBoard("t");
+  B.insertWave(b, "A", { prefix: "A-" });
+  B.insertWave(b, "B", { prefix: "B-" });
+  assert.equal(B.insertPhase(b, "A-1").wave.id, "A");
+  assert.equal(B.insertPhase(b, "B-1").wave.id, "B");
+  assert.equal(B.insertPhase(b, "A-1.1").wave.id, "A");
+  assert.throws(() => B.insertPhase(b, "Z9"), /pass --wave/);
+  assert.equal(B.insertPhase(b, "Z9", {}, { wave: "B" }).wave.id, "B");
+  assert.equal(B.insertPhase(b, "Z10").wave.id, "B", "same stem as an existing phase");
+});
+
+test("phase ids are unique across waves", () => {
+  const b = B.newBoard("t");
+  B.insertPhase(b, "P1", {}, { wave: "1" });
+  assert.throws(() => B.insertPhase(b, "P1", {}, { wave: "2" }), /unique per board/);
+});
+
+test("fields: status aliases and unknown fields", () => {
+  const b = board("P0");
+  B.updatePhase(b, "P0", { status: "merged", pr: "#12" });
+  assert.equal(b.waves[0].phases[0].status, "done");
+  assert.throws(() => B.updatePhase(b, "P0", { status: "meh" }), /unknown status/);
+  assert.throws(() => B.updatePhase(b, "P0", { colour: "x" }), /unknown phase field/);
+});
+
+test("dependency graph: add, cycle refusal, rename rewrites, delete cleans", () => {
+  const b = board("P0", "P1", "P2");
+  B.addDeps(b, "P1", "P0");
+  B.addDeps(b, "P2", ["P1", "p0"]);
+  assert.deepEqual(b.waves[0].phases[2].deps, ["P1", "P0"]);
+  assert.throws(() => B.addDeps(b, "P0", "P2"), /cycle/);
+  assert.throws(() => B.addDeps(b, "P0", "P9"), /not a phase/);
+  B.updatePhase(b, "P1", {}, { rename: "P1.5" });
+  assert.deepEqual(b.waves[0].phases.find((p) => p.id === "P2").deps, ["P1.5", "P0"]);
+  const { removedDeps } = B.deletePhase(b, "P0");
+  assert.deepEqual(removedDeps, ["P1.5 -> P0", "P2 -> P0"]);
+  B.validate(b);
+});
+
+test("setDeps is atomic on failure", () => {
+  const b = board("P0", "P1", "P2");
+  B.addDeps(b, "P1", "P0");
+  assert.throws(() => B.setDeps(b, "P1", "P2,P9"));
+  assert.deepEqual(b.waves[0].phases[1].deps, ["P0"]);
+});
+
+test("ready phases have every dependency done", () => {
+  const b = board("P0", "P1", "P2");
+  B.addDeps(b, "P1", "P0");
+  B.addDeps(b, "P2", "P1");
+  B.updatePhase(b, "P0", { status: "done" });
+  assert.deepEqual(B.readyPhases(b), ["P1"]);
+});
+
+test("wave delete needs --force when non-empty and cleans deps", () => {
+  const b = B.newBoard("t");
+  B.insertPhase(b, "A1", {}, { wave: "A" });
+  B.insertPhase(b, "B1", { deps: "A1" }, { wave: "B" });
+  assert.throws(() => B.deleteWave(b, "A"), /--force/);
+  B.deleteWave(b, "A", { force: true });
+  assert.deepEqual(b.waves.map((w) => w.id), ["B"]);
+  assert.deepEqual(b.waves[0].phases[0].deps, []);
+});
+
+test("mermaid ids do not collide for P0.1 and P0-1", () => {
+  const b = board("P0", "P0.1", "P0-1");
+  B.addDeps(b, "P0-1", "P0.1");
+  assert.match(B.toMermaid(b), /n1 --> n2/);
+});
+
+test("log is newest first and capped", () => {
+  const b = B.newBoard("t");
+  for (let i = 0; i < B.LOG_LIMIT + 5; i++) B.appendLog(b, `e${i}`);
+  assert.equal(b.log.length, B.LOG_LIMIT);
+  assert.equal(b.log[0].text, `e${B.LOG_LIMIT + 4}`);
+});

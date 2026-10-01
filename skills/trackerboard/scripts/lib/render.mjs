@@ -20,6 +20,12 @@ export function renderPage(board) {
   return html.replace(slot, () => `<script type="application/json" id="tb-data">${scriptJson(board)}</script>`);
 }
 
+// A standalone document for local preview; the artifact skeleton supplies
+// the doctype and charset at publish time.
+export function renderStandalone(board) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>\n${renderPage(board)}</body></html>\n`;
+}
+
 // The db document body: the board itself.
 export function docBody(board) {
   return board;

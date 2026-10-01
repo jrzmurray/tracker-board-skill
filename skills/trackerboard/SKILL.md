@@ -31,6 +31,7 @@ trackerboard log "JR ruled the EXCLUDED sites"
 - Long values: `--req @file.md` reads a file; `--notes -` reads stdin.
 - `--wave` is optional. A new phase goes to the wave of its parent id (`P0.1` → `P0`'s wave), else the wave whose `--prefix` matches, else the wave holding the same id stem, else the only wave.
 - Position comes from the id: `P0.1` / `P0-1` lands right after `P0` (and after lower siblings like `P0.0`) even if `P1` exists. Insert never overwrites; it fails if the id exists anywhere on the board.
+- Import an existing board JSON with `trackerboard import <name> --from file.json`.
 - Rename with `update --phase X --rename Y` (dependencies follow). Move with `--to-wave W`.
 - Deleting a phase removes it from every other phase's deps and says which.
 - Add `--log "…"` to any write to record it in the board's "Recent changes" (keeps the last 40).

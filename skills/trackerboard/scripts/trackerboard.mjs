@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
-import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage } from "./lib/render.mjs";
+import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage, renderStandalone } from "./lib/render.mjs";
 
 const USAGE = `trackerboard <command> [options]
 
@@ -44,6 +44,7 @@ Publish
   push                    Write the db document and print the ArtifactData call.
   synced --version N      Record the db version an ArtifactData write returned.
   pull --from FILE [--version N]   Replace the local board with a fetched db document.
+  import [name] --from FILE [--branch] [--no-bind]   Create a board from board JSON.
   render [--out FILE]     Write a static HTML snapshot (for local preview).
 `;
 
@@ -413,11 +414,24 @@ const commands = {
     out(`ok: replaced local ${name} from ${opts.from}`);
   },
 
+  import({ pos, opts }) {
+    if (!opts.from) throw new B.BoardError("import needs --from <board json>");
+    const board = JSON.parse(fs.readFileSync(opts.from, "utf8"));
+    const name = S.checkName(pos[0] || board.name);
+    if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; use pull to replace it`);
+    board.name = name;
+    B.validate(board);
+    S.createBoard(name, { title: board.title });
+    S.saveBoard(board);
+    out(`ok: imported ${name} (${B.allPhases(board).length} phases)`);
+    if (!opts["no-bind"]) commands.bind({ opts: { board: name, branch: opts.branch } });
+  },
+
   render({ opts }) {
     const name = boardName(opts);
     const file = opts.out || path.join(S.outDir(), `${name}.html`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, renderPage(S.loadBoard(name)));
+    fs.writeFileSync(file, renderStandalone(S.loadBoard(name)));
     out(`ok: wrote ${file}`);
   },
 };

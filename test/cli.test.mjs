@@ -110,3 +110,15 @@ test("field values can come from a file", () => {
   run(["insert", "--phase", "P1", "--req", `@${f}`]);
   assert.match(run(["show", "--phase", "P1"]).stdout, /req: line one\n\n- a\n- b/);
 });
+
+test("import creates a board from JSON and refuses to overwrite", () => {
+  const { dir, run } = sandbox();
+  run(["create", "src", "--no-bind"]);
+  run(["insert", "--board", "src", "--phase", "P1", "--deps", ""]);
+  run(["insert", "--board", "src", "--phase", "P2", "--deps", "P1"]);
+  const file = path.join(dir, "b.json");
+  fs.writeFileSync(file, run(["show", "--board", "src", "--json"]).stdout);
+  assert.match(run(["import", "copy", "--from", file]).stdout, /imported copy \(2 phases\)/);
+  assert.match(run(["show"]).stdout, /P2 +todo +← P1/);
+  assert.match(run(["import", "copy", "--from", file], { ok: false }).stderr, /already exists/);
+});

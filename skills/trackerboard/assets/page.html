@@ -67,7 +67,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .deps{font:12px var(--mono);overflow-wrap:anywhere}
 .deps a{text-decoration:none}
 .deps .ok{color:var(--done)}
-.prc{font:12px var(--mono);overflow-wrap:anywhere}
+.prc{font:12px var(--mono);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .chev{justify-self:end;color:var(--muted);font:12px var(--mono);transition:transform .15s}
 .phase[open] .chev{transform:rotate(90deg)}
 .body{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));padding:4px 10px 16px}
@@ -162,7 +162,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       const done = ["done", "dropped"].includes(statusOf.get(keyOf(d)));
       return `<a href="#${domId(d)}" data-jump="${esc(d)}" class="${done ? "ok" : ""}">${esc(d)}${done ? " ✓" : ""}</a>`;
     }).join(", ") : `<span style="color:var(--muted)">none</span>`;
-    const fields = [["Requirements", phase.req], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v);
+    const fields = [["Requirements", phase.req], ["PR", (phase.pr || "").length > 60 ? phase.pr : ""], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v);
     const body = fields.length ? fields.map(([h, v]) => `<div class="field"><h3>${h}</h3>${md(v)}</div>`).join("") : `<div class="field" style="color:var(--muted)">No details recorded.</div>`;
     return `<details class="phase" id="${domId(phase.id)}" ${openIds.has(phase.id) ? "open" : ""}>
       <summary>

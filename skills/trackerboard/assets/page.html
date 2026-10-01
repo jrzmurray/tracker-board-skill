@@ -103,6 +103,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .gview.panning{cursor:grabbing}
 .gview svg{display:block;width:100%;height:100%}
 .gview svg text{font-family:var(--mono)}
+.gview .off{display:none}
+.gview.dim .off{display:inline;opacity:.14;pointer-events:none}
 .gnode:focus-visible rect{stroke:var(--accent);stroke-width:2.5}
 .gctl{position:absolute;top:8px;right:8px;display:flex;gap:4px}
 .gctl .btn{padding:2px 8px;min-width:30px;background:var(--paper);box-shadow:0 1px 2px rgb(0 0 0 / .12)}
@@ -146,10 +148,20 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   const STATUS = ["active","review","blocked","waiting","todo","ongoing","external","done","dropped"];
   const LABEL = {todo:"not started",active:"in progress",review:"in review",waiting:"waiting",blocked:"blocked",done:"done",ongoing:"ongoing",external:"external",dropped:"dropped"};
   const app = document.getElementById("app");
-  let board = null, filter = null, openIds = new Set();
+  let board = null, openIds = new Set();
+  // Filter: any of the selected statuses (none selected = every status), and
+  // the selected owner if one is. Kept per viewer in localStorage.
+  let statuses = new Set(), owner = null, dimOthers = false;
   // The Issue column appears only when some phase on the board has an issue.
   let hasIssues = false;
-  try { filter = localStorage.getItem("tb-filter") || null; } catch {}
+  try {
+    const f = JSON.parse(localStorage.getItem("tb-filter") || "{}");
+    if (Array.isArray(f.statuses)) statuses = new Set(f.statuses.filter((s) => STATUS.includes(s)));
+    if (typeof f.owner === "string") owner = f.owner;
+    dimOthers = f.dim === true;
+  } catch {}
+  const saveFilter = () => { try { localStorage.setItem("tb-filter", JSON.stringify({ statuses: [...statuses], owner, dim: dimOthers })); } catch {} };
+  const filtering = () => statuses.size > 0 || owner != null;
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   const keyOf = (s) => String(s).toLowerCase();
@@ -179,8 +191,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 
   function phasesOf(b) { return b.waves.flatMap((w) => w.phases.map((p) => ({ wave: w, phase: p }))); }
 
-  // filter is a status, or "owner:<id>"
-  const matches = (p) => !filter || (filter.startsWith("owner:") ? (p.owner || "") === filter.slice(6) : p.status === filter);
+  const matches = (p) => (!statuses.size || statuses.has(p.status)) && (owner == null || (p.owner || "") === owner);
 
   function summary(b) {
     const all = phasesOf(b), n = all.length || 1;
@@ -188,8 +199,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     all.forEach(({ phase }) => counts[phase.status] = (counts[phase.status] || 0) + 1);
     const bar = STATUS.filter((s) => counts[s]).map((s) => `<span style="width:${(counts[s] / n) * 100}%;background:var(--${s})" title="${LABEL[s]}: ${counts[s]}"></span>`).join("");
     const chips = STATUS.filter((s) => counts[s]).map((s) =>
-      `<button class="chip" data-filter="${s}" aria-pressed="${filter === s}"><i style="background:var(--${s})"></i>${LABEL[s]} <b>${counts[s]}</b></button>`).join("");
-    return `<section class="panel" aria-label="Status summary"><div class="bar" role="img" aria-label="${all.length} phases by status">${bar}</div><div class="chips">${chips}${filter ? `<button class="chip" data-filter="">show all</button>` : ""}</div>${ownerKey(all)}</section>`;
+      `<button class="chip" data-status="${s}" aria-pressed="${statuses.has(s)}"><i style="background:var(--${s})"></i>${LABEL[s]} <b>${counts[s]}</b></button>`).join("");
+    return `<section class="panel" aria-label="Status summary"><div class="bar" role="img" aria-label="${all.length} phases by status">${bar}</div><div class="chips">${chips}${filtering() ? `<button class="chip" data-clear>show all</button>` : ""}</div>${ownerKey(all)}</section>`;
   }
 
   // Owner key: every owner's glyph and id, with how many phases they hold.
@@ -199,7 +210,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     for (const { phase } of all) if (phase.owner) n.set(phase.owner, (n.get(phase.owner) || 0) + 1);
     if (!n.size) return "";
     const chips = [...n].sort((a, z) => a[0].localeCompare(z[0])).map(([o, c]) =>
-      `<button class="chip" data-filter="owner:${esc(o)}" aria-pressed="${filter === "owner:" + o}">${ownerGlyph(o, 12)}${esc(o)} <b>${c}</b></button>`).join("");
+      `<button class="chip" data-owner="${esc(o)}" aria-pressed="${owner === o}">${ownerGlyph(o, 12)}${esc(o)} <b>${c}</b></button>`).join("");
     return `<div class="chips owners"><span class="chiplabel">Owners</span>${chips}</div>`;
   }
 
@@ -243,8 +254,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
         lanes.get(k).push(p);
       }
       const groups = [...lanes].map(([lane, ps]) => ({ lane, ps, rows: ps.filter(matches) }))
-        .filter((g) => !filter || g.rows.length);
-      if (filter && !groups.length) return "";
+        .filter((g) => !filtering() || g.rows.length);
+      if (filtering() && !groups.length) return "";
       const laneHead = (g, tag) => `<hr class="lanerule"><div class="wavehead lanehead"><${tag}>${g.lane ? `Lane ${esc(g.lane)}` : "No lane"}</${tag}>${tally(g.ps)}</div><hr class="lanerule">`;
       const tables = groups.map((g, i) => `<div class="lanegroup">
           ${laneHead(g, single ? "h2" : "h3")}
@@ -405,14 +416,20 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const byKey = new Map(all.map((p) => [keyOf(p.id), p]));
     const L = graphLayout(b, all);
     gl = L;
-    const groups = (L.groups || []).map((g) => `<g class="gwave">
+    // Filtering marks what does not match as .off and CSS hides (or dims) it
+    // in place. The layout is precomputed, so nothing moves: gaps stay where
+    // the hidden phases were.
+    const on = (id) => { const p = byKey.get(keyOf(id)); return !p || matches(p); };
+    const waveOn = new Map(b.waves.map((w) => [w.id, w.phases.some(matches)]));
+    const off = (hit) => (hit ? "" : " off");
+    const groups = (L.groups || []).map((g) => `<g class="gwave${off(waveOn.get(g.wave) !== false)}">
       <rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="8" fill="var(--soft)" fill-opacity=".45" stroke="var(--rule)"/>
       <text x="${g.x + 12}" y="${g.y + 19}" font-size="11" font-weight="600" fill="var(--muted)">${esc(clip(g.title ? `${g.wave} · ${g.title}` : g.wave, Math.floor((g.w - 24) / 6.6)))}</text></g>`).join("");
-    const edges = (L.edges || []).map((e) => `<path d="${edgePath(e.points)}" fill="none" stroke="var(--rule)" stroke-width="1.5" marker-end="url(#tb-arrow)"/>`).join("");
+    const edges = (L.edges || []).map((e) => `<path class="gedge${off(e.from == null || (on(e.from) && on(e.to)))}" d="${edgePath(e.points)}" fill="none" stroke="var(--rule)" stroke-width="1.5" marker-end="url(#tb-arrow)"/>`).join("");
     const nodes = L.nodes.map((n) => {
       const p = byKey.get(keyOf(n.id)); if (!p) return "";
       const title = String(p.title || "").replace(/[`*]/g, "");
-      return `<g class="gnode" data-jump="${esc(p.id)}" data-tip="${p.lane ? `Lane ${esc(p.lane)}&#10;` : ""}${esc(p.id)} - ${esc(title)} (${esc(LABEL[p.status])}${p.owner ? ", owner " + esc(p.owner) : ""})" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(title)} (${esc(LABEL[p.status])})">
+      return `<g class="gnode${off(matches(p))}" data-jump="${esc(p.id)}" data-tip="${p.lane ? `Lane ${esc(p.lane)}&#10;` : ""}${esc(p.id)} - ${esc(title)} (${esc(LABEL[p.status])}${p.owner ? ", owner " + esc(p.owner) : ""})" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(title)} (${esc(LABEL[p.status])})">
         <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="6" fill="var(--${p.status}-bg)" stroke="var(--${p.status})" stroke-width="1.2"/>
         ${labelSvg(p.id, title, n, p.owner ? 18 : 0)}
         ${p.owner ? ownerGlyphAt(p.owner, n.x + n.w - 20, n.y + 6) : ""}
@@ -420,10 +437,10 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     }).join("");
     const legend = STATUS.filter((s) => all.some((p) => p.status === s)).map((s) => `<span>${pill(s)}</span>`).join("");
     return `<section class="panel" aria-label="Dependency graph"><h2>Dependency graph</h2>
-      <div class="gview" id="tb-gview"><svg role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
+      <div class="gview${dimOthers ? " dim" : ""}" id="tb-gview"><svg role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
       <defs><marker id="tb-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
       <g class="gcam" transform="scale(${MIN_READ})">${groups}${edges}${nodes}</g></svg>
-      <div class="gctl"><button class="btn" data-gz="out" aria-label="Zoom out">−</button><button class="btn" data-gz="in" aria-label="Zoom in">+</button><button class="btn" data-gz="fit" aria-label="Fit whole graph">Fit</button><button class="btn" data-gz="reset" aria-label="Reset view">Reset</button></div></div>
+      <div class="gctl"><button class="btn" data-gz="out" aria-label="Zoom out">−</button><button class="btn" data-gz="in" aria-label="Zoom in">+</button><button class="btn" data-gz="fit" aria-label="Fit whole graph">Fit</button><button class="btn" data-gz="reset" aria-label="Reset view">Reset</button>${filtering() ? `<button class="btn" data-gdim aria-pressed="${dimOthers}">${dimOthers ? "Hide filtered" : "Dim filtered"}</button>` : ""}</div></div>
       <div class="ghint">Drag to pan · ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"}+scroll or pinch to zoom · click a phase to open it</div>
       <div class="legend">${legend}</div></section>`;
   }
@@ -555,8 +572,15 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   }
 
   app.addEventListener("click", (e) => {
-    const f = e.target.closest("[data-filter]");
-    if (f) { const v = f.dataset.filter || null; filter = filter === v ? null : v; try { filter ? localStorage.setItem("tb-filter", filter) : localStorage.removeItem("tb-filter"); } catch {} render(); return; }
+    const f = e.target.closest("[data-status],[data-owner],[data-clear],[data-gdim]");
+    if (f) {
+      const d = f.dataset;
+      if (d.status) statuses.has(d.status) ? statuses.delete(d.status) : statuses.add(d.status);
+      else if (d.owner != null) owner = owner === d.owner ? null : d.owner;
+      else if (d.clear != null) { statuses.clear(); owner = null; }
+      else dimOthers = !dimOthers;
+      saveFilter(); render(); return;
+    }
     if (e.target.id === "tb-expand" || e.target.id === "tb-collapse") {
       const open = e.target.id === "tb-expand";
       app.querySelectorAll("details.phase").forEach((d) => { d.open = open; });
@@ -602,7 +626,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   }, true);
   function jump(id) {
     let el = document.getElementById(domId(id));
-    if (!el && filter) { filter = null; render(); el = document.getElementById(domId(id)); }
+    if (!el && filtering()) { statuses.clear(); owner = null; saveFilter(); render(); el = document.getElementById(domId(id)); }
     if (!el) return;
     el.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
     el.classList.add("flash");

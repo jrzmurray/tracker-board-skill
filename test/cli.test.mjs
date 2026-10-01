@@ -16,8 +16,8 @@ function sandbox() {
   const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
   git("init", "-q", "-b", "main");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
-  const run = (args, { cwd = repo, ok = true } = {}) => {
-    const env = { ...process.env, TRACKERBOARD_HOME: home };
+  const run = (args, { cwd = repo, ok = true, env: extra = {} } = {}) => {
+    const env = { ...process.env, TRACKERBOARD_HOME: home, ...extra };
     delete env.TRACKERBOARD_BOARD;
     const r = spawnSync("node", [CLI, ...args], { cwd, env, encoding: "utf8" });
     if (ok && r.status !== 0) throw new Error(`${args.join(" ")} failed: ${r.stderr}`);
@@ -137,4 +137,58 @@ test("owner is a phase field: set, shown, cleared", () => {
   assert.match(run(["show", "--phase", "P1"]).stdout, /owner builder-3/);
   run(["update", "--phase", "P1", "--owner", ""]);
   assert.doesNotMatch(run(["show"]).stdout, /@builder-3/);
+});
+
+test("refresh/pull merges a concurrent publish with unpublished local changes", () => {
+  const { home, run } = sandbox();
+  const call = (out) => JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  const publishRemote = (mutate) => {
+    const file = path.join(home, "remote", "b", "board", "state.json");
+    const doc = JSON.parse(fs.readFileSync(path.join(home, "boards", "b.base.json"), "utf8"));
+    mutate(doc);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(doc));
+  };
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1"]);
+  run(["insert", "--phase", "P2", "--deps", "P1"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  let c = call(run(["push"]).stdout);
+  run(["synced", "--version", "1", "--doc", c.file_path]);
+
+  // Another agent publishes v2 (P1 done) while this one sets P2's owner.
+  publishRemote((d) => { d.waves[0].phases[0].status = "done"; d.log.unshift({ at: "2030-01-01T00:00:00.000Z", text: "P1 merged" }); });
+  run(["update", "--phase", "P2", "--owner", "me"]);
+  c = call(run(["refresh"]).stdout);
+  assert.equal(c.action, "get");
+  assert.equal(c.out_dir, path.join(home, "remote", "b"));
+
+  let out = run(["pull", "--version", "2"]).stdout;
+  assert.match(out, /pulled b db version 2 \(was 1\)/);
+  assert.equal(call(out).if_version, 2);
+  let show = run(["show"]).stdout;
+  assert.match(show, /P1 +done/);
+  assert.match(show, /P2 +todo .*@me/);
+  assert.match(run(["pull", "--version", "2"]).stdout, /current at db version 2/);
+
+  // Both sides change the same field: conflict until a side is chosen.
+  run(["synced", "--version", "3"]);
+  publishRemote((d) => { d.waves[0].phases[1].owner = "other"; });
+  run(["update", "--phase", "P2", "--owner", "mine"]);
+  const r = run(["pull", "--version", "4"], { ok: false });
+  assert.match(r.stderr, /conflicts with unpublished changes here:\n  phase P2 owner/);
+  run(["pull", "--version", "4", "--theirs"]);
+  assert.match(run(["show"]).stdout, /@other/);
+});
+
+test("writes to a linked board need a recent refresh", () => {
+  const { run } = sandbox();
+  run(["create", "b"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  run(["synced", "--version", "1"]);
+  const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
+  const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
+  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: ArtifactData \{"action":"get"/);
+  assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
+  run(["insert", "--phase", "P1"]);
 });

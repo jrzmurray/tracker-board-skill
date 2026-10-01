@@ -6,6 +6,7 @@ Run the CLI as `trackerboard` if it is on PATH. Otherwise run `node <skill dir>/
 
 ## Rules
 
+- Other agents may write the board at any time. Start each session with `trackerboard refresh` and follow its steps (see Publishing). Writes are refused if the board hasn't been checked against the artifact in the last two minutes; when that happens, refresh and repeat the write.
 - Run `trackerboard show` before you start work. It lists each phase's status, owner and deps, plus the phases whose deps are all done. Use `show --phase X` for one phase in full. Prefer these to opening the published page.
 - When you start a phase: `trackerboard update --phase X --status active --owner <your agent id>`.
 - When a PR opens, is reviewed or merges, update `--status`, `--pr` and `--note`. `--note` is the one-line detail shown under the status.
@@ -42,6 +43,8 @@ trackerboard log "decision: …"
 
 Every write prints a `publish:` step and a `then:` step. Only the last write's steps matter.
 
-- **Claude (claude.ai artifact):** make the printed `ArtifactData` call exactly as given. Then run the printed `trackerboard synced --version <version from the result>`. The page updates live.
-  - If the write is refused for a version mismatch, someone else changed the board. Ask before overwriting, or pull their version first: `get` the document with `out_dir`, then run `trackerboard pull --from <saved json> --version N`, then redo your writes.
-- **Other harnesses:** skip the publish step. Board JSON on disk is the source of truth. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.
+- **Claude (claude.ai artifact):**
+  - **Refresh:** `trackerboard refresh` prints an `ArtifactData get` call. Make it, then run the printed `trackerboard pull --version <version from the result>`. The pull does nothing if the board is current; otherwise it merges the published board with this machine's unpublished changes. If both sides changed the same field, it stops and lists the conflicts. Ask the user, then rerun with `--theirs` or `--ours`.
+  - **Publish:** make the printed `ArtifactData set` call exactly as given, then run the printed `trackerboard synced …` with the version from the result. The page updates live.
+  - **Version mismatch:** someone published in between. Refresh as above, then publish the step that `pull` prints. Nothing needs to be redone.
+- **Other harnesses:** nothing is linked, so there is no refresh or publish step. The board JSON on disk is the source of truth, shared by agents on this machine through a lock. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.

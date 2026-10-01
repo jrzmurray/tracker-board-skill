@@ -2,8 +2,11 @@
 //
 // Layout under $TRACKERBOARD_HOME (default ~/.trackerboard):
 //   boards/<name>.json        board data (the source of truth)
-//   boards/<name>.local.json  machine-local state: bindings, artifact url, db version
-//   out/<name>.doc.json       the db document body, written by `push`
+//   boards/<name>.local.json  machine-local state: bindings, artifact url, db version,
+//                             when the artifact was last checked
+//   boards/<name>.base.json   the published document as of that db version (merge base)
+//   remote/<name>/            where `refresh` asks ArtifactData to save the published document
+//   out/docs/<name>-<hash>.json  db document bodies, written by every write and `push`
 //   out/<name>.html           static render, written by `render`
 
 import { createHash } from "node:crypto";
@@ -21,6 +24,8 @@ const boardsDir = () => path.join(home(), "boards");
 export const outDir = () => path.join(home(), "out");
 const boardPath = (name) => path.join(boardsDir(), `${name}.json`);
 const localPath = (name) => path.join(boardsDir(), `${name}.local.json`);
+const basePath = (name) => path.join(boardsDir(), `${name}.base.json`);
+export const remoteDir = (name) => path.join(home(), "remote", name);
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 
@@ -79,7 +84,7 @@ export function createBoard(name, opts) {
 }
 
 export function removeBoard(name) {
-  for (const f of [boardPath(name), localPath(name)]) fs.rmSync(f, { force: true });
+  for (const f of [boardPath(name), localPath(name), basePath(name)]) fs.rmSync(f, { force: true });
 }
 
 export function loadLocal(name) {
@@ -88,6 +93,45 @@ export function loadLocal(name) {
 
 export function saveLocal(name, local) {
   writeJson(localPath(checkName(name)), local);
+}
+
+export function loadBase(name) {
+  return readJson(basePath(checkName(name)), null);
+}
+
+export function dropBase(name) {
+  fs.rmSync(basePath(checkName(name)), { force: true });
+}
+
+export function saveBase(name, board) {
+  writeJson(basePath(checkName(name)), board);
+}
+
+// One writer at a time across processes, so agents sharing this machine never
+// lose each other's read-modify-write. Waits up to 15s; a lock older than 30s
+// is treated as abandoned.
+export async function withLock(fn) {
+  const dir = path.join(home(), ".lock");
+  fs.mkdirSync(home(), { recursive: true });
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    try {
+      fs.mkdirSync(dir);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - fs.statSync(dir).mtimeMs > 30000) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
+      } catch {}
+      if (Date.now() > deadline) throw new BoardError(`another trackerboard command holds ${dir}; retry, or remove it if no command is running`);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ---------- CWD context ----------

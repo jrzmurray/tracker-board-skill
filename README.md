@@ -50,8 +50,10 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 | Path | Contents |
 | --- | --- |
 | `boards/<name>.json` | the board |
-| `boards/<name>.local.json` | this machine's bindings, artifact URL and last db version |
-| `out/<name>.doc.json` | the db document written on each change |
+| `boards/<name>.local.json` | this machine's bindings, artifact URL, last db version and when it was last checked |
+| `boards/<name>.base.json` | the published document as of the recorded db version (the merge base for `pull`) |
+| `remote/<name>/` | where `refresh` has `ArtifactData get` save the published document |
+| `out/docs/<name>-<hash>.json` | the db document written on each change, one file per snapshot |
 | `out/<name>.page.html` | the publishable page |
 
 ## Board resolution

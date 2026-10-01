@@ -2,12 +2,15 @@
 // trackerboard: deterministic CRUD for phase/wave tracker boards that publish
 // to a claude.ai artifact. Run `trackerboard help` for usage.
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
+import { content, mergeBoards, sameContent } from "./lib/merge.mjs";
 import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage, renderStandalone } from "./lib/render.mjs";
 
+const FRESH_SECONDS_HELP = process.env.TRACKERBOARD_FRESH_SECONDS ?? 120;
 const USAGE = `trackerboard <command> [options]
 
 Boards
@@ -43,15 +46,20 @@ Publish
   page                    Write the publishable page and print the first-publish steps.
   link --url URL          Record the artifact URL for this board.
   push                    Write the db document and print the ArtifactData call.
-  synced --version N      Record the db version an ArtifactData write returned.
-  pull --from FILE [--version N]   Replace the local board with a fetched db document.
+  synced --version N [--doc FILE]  Record the db version an ArtifactData write returned.
+  refresh                 Print the ArtifactData get that checks the published board.
+  pull --version N [--from FILE] [--theirs | --ours]
+                          Merge the fetched document into the local board
+                          (no-op when N is the recorded version).
+  Writes to a linked board need a refresh within ${FRESH_SECONDS_HELP}s
+  (TRACKERBOARD_FRESH_SECONDS); otherwise they print the refresh steps and stop.
   import [name] --from FILE [--branch] [--no-bind]   Create a board from board JSON.
   render [--out FILE]     Write a static HTML snapshot (for local preview).
 `;
 
 // ---------- args ----------
 
-const BOOL = new Set(["force", "json", "no-bind", "branch", "all", "help"]);
+const BOOL = new Set(["theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -101,18 +109,49 @@ function rejectLeftovers(opts, pos, extra = 0) {
 
 const out = (s = "") => process.stdout.write(s + "\n");
 
-function docFile(name) {
-  return path.join(S.outDir(), `${name}.doc.json`);
-}
-
+// Each document body gets its own content-addressed file, so a publish call
+// always sends the snapshot it was printed for, even if another agent on this
+// machine writes the board before the call is made.
 async function writeDoc(board) {
   const body = JSON.stringify(await docBody(board));
   if (Buffer.byteLength(body) > DOC_LIMIT) {
     throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte db limit; trim long fields or the log`);
   }
-  fs.mkdirSync(S.outDir(), { recursive: true });
-  fs.writeFileSync(docFile(board.name), body);
-  return docFile(board.name);
+  const dir = path.join(S.outDir(), "docs");
+  const file = path.join(dir, `${board.name}-${createHash("sha256").update(body).digest("hex").slice(0, 12)}.json`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, body);
+  return file;
+}
+
+// ---------- freshness ----------
+
+// Writes need a recent check against the artifact, because other agents may
+// publish to it at any time.
+const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
+const linked = (local) => !!local.artifactUrl && local.dbVersion != null;
+const checkedAgo = (local) => local.checkedAt ? (Date.now() - Date.parse(local.checkedAt)) / 1000 : Infinity;
+const age = (sec) => sec === Infinity ? "never" : sec < 90 ? `${Math.round(sec)}s ago` : sec < 5400 ? `${Math.round(sec / 60)}m ago` : `${Math.round(sec / 3600)}h ago`;
+
+function refreshLines(name, local) {
+  const call = { action: "get", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, out_dir: S.remoteDir(name) };
+  return [
+    `refresh: ArtifactData ${JSON.stringify(call)}`,
+    `then:    trackerboard pull --board ${name} --version <version from the result>`,
+  ];
+}
+
+function requireFresh(name) {
+  const local = S.loadLocal(name);
+  if (!linked(local) || checkedAgo(local) <= FRESH_SECONDS) return;
+  throw new B.BoardError(`${name} was last checked against its artifact ${age(checkedAgo(local))}; other agents may have written it. Refresh, then repeat this command:\n${refreshLines(name, local).join("\n")}`);
+}
+
+function staleNote(name) {
+  const local = S.loadLocal(name);
+  if (linked(local) && checkedAgo(local) > FRESH_SECONDS) {
+    out(`\nnote: last checked against the artifact ${age(checkedAgo(local))}; \`trackerboard refresh\` first if others may have written it`);
+  }
 }
 
 async function pushInstruction(board) {
@@ -125,10 +164,11 @@ async function pushInstruction(board) {
   const call = { action: "set", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, file_path: file };
   if (local.dbVersion != null) call.if_version = local.dbVersion;
   out(`publish: ArtifactData ${JSON.stringify(call)}`);
-  out(`then:    trackerboard synced --board ${board.name} --version <version from the result>`);
+  out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
 }
 
 async function commit(board, opts, summary) {
+  requireFresh(board.name);
   B.appendLog(board, opts.log);
   S.saveBoard(board);
   out(`ok: ${summary}`);
@@ -160,6 +200,7 @@ function showBoard(board, name, opts) {
     const { wave, phase } = B.locatePhase(board, opts.phase, opts.wave);
     showPhase(wave, phase);
     for (const d of B.dependents(board, phase.id)) out(`  needed by: ${d}`);
+    staleNote(name);
     return;
   }
   const local = S.loadLocal(name);
@@ -174,6 +215,19 @@ function showBoard(board, name, opts) {
   }
   const ready = B.readyPhases(board);
   if (ready.length) out(`\nready: ${ready.join(", ")}`);
+  staleNote(name);
+}
+
+// Delete this board's document snapshots older than a day, except `keep`.
+function pruneDocs(name, keep) {
+  const dir = path.join(S.outDir(), "docs");
+  let files = [];
+  try { files = fs.readdirSync(dir); } catch { return; }
+  for (const f of files) {
+    const file = path.join(dir, f);
+    if (!f.startsWith(`${name}-`) || file === keep) continue;
+    try { if (Date.now() - fs.statSync(file).mtimeMs > 86400000) fs.rmSync(file); } catch {}
+  }
 }
 
 // ---------- commands ----------
@@ -380,7 +434,7 @@ const commands = {
     const name = boardName(opts);
     if (!opts.url || !/^https:\/\/claude\.ai\/(code\/)?artifact\//.test(opts.url)) throw new B.BoardError("link needs --url https://claude.ai/artifact/...");
     const local = S.loadLocal(name);
-    if (local.artifactUrl !== opts.url) local.dbVersion = null;
+    if (local.artifactUrl !== opts.url) { local.dbVersion = null; local.checkedAt = null; S.dropBase(name); }
     local.artifactUrl = opts.url;
     S.saveLocal(name, local);
     out(`ok: ${name} -> ${opts.url}`);
@@ -395,25 +449,77 @@ const commands = {
     const name = boardName(opts);
     const v = Number(opts.version);
     if (!Number.isInteger(v) || v < 1) throw new B.BoardError("synced needs --version <positive integer>");
+    // The published document is now the merge base: the snapshot that was
+    // sent (--doc), or the local board if it was not named.
+    const sent = opts.doc ? JSON.parse(fs.readFileSync(opts.doc, "utf8")) : S.loadBoard(name);
+    if (sent.name !== name) throw new B.BoardError(`document is board "${sent.name}", not "${name}"`);
+    delete sent.layout;
+    S.saveBase(name, sent);
     const local = S.loadLocal(name);
     local.dbVersion = v;
+    local.checkedAt = new Date().toISOString();
     S.saveLocal(name, local);
+    pruneDocs(name, opts.doc);
     out(`ok: ${name} db version ${v}`);
   },
 
-  pull({ opts }) {
+  refresh({ opts }) {
     const name = boardName(opts);
-    if (!opts.from) throw new B.BoardError("pull needs --from <file>");
-    const board = JSON.parse(fs.readFileSync(opts.from, "utf8"));
-    delete board.layout; // derived; recomputed on every push
-    if (board.name !== name) throw new B.BoardError(`document is board "${board.name}", not "${name}"`);
-    S.saveBoard(board);
-    if (opts.version) {
-      const local = S.loadLocal(name);
-      local.dbVersion = Number(opts.version);
-      S.saveLocal(name, local);
+    const local = S.loadLocal(name);
+    if (!local.artifactUrl) return out(`ok: ${name} has no artifact linked; nothing to check`);
+    for (const l of refreshLines(name, local)) out(l);
+  },
+
+  // Bring in the published document. Unpublished local changes are merged
+  // onto it; a field changed differently on both sides stops the pull unless
+  // --theirs or --ours says which side wins.
+  async pull({ opts }) {
+    const name = boardName(opts);
+    const v = Number(opts.version);
+    if (!Number.isInteger(v) || v < 1) throw new B.BoardError("pull needs --version <version from the ArtifactData result>");
+    const from = opts.from || path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
+    const remote = JSON.parse(fs.readFileSync(from, "utf8"));
+    delete remote.layout; // derived; recomputed on every push
+    if (remote.name !== name) throw new B.BoardError(`document is board "${remote.name}", not "${name}"`);
+    B.validate(remote);
+    const local = S.loadLocal(name);
+    const board = S.loadBoard(name);
+    const base = S.loadBase(name);
+    const now = new Date().toISOString();
+
+    if (local.dbVersion != null && v < local.dbVersion) {
+      return out(`ok: version ${v} is older than the recorded ${local.dbVersion}; nothing changed`);
     }
-    out(`ok: replaced local ${name} from ${opts.from}`);
+    if (v === local.dbVersion) {
+      if (!base) S.saveBase(name, remote);
+      S.saveLocal(name, { ...local, checkedAt: now });
+      out(`ok: ${name} is current at db version ${v}`);
+      if (!sameContent(board, base || remote)) {
+        out("local changes are not published yet:");
+        await pushInstruction(board);
+      }
+      return;
+    }
+
+    // Without a recorded base, assume nothing local is unpublished.
+    const prefer = opts.theirs ? "remote" : opts.ours ? "local" : null;
+    const { board: merged, conflicts, notes } = !base || sameContent(board, base)
+      ? { board: remote, conflicts: [], notes: [] }
+      : mergeBoards(content(base), content(board), content(remote), { prefer });
+    if (conflicts.length) {
+      throw new B.BoardError(`db version ${v} conflicts with unpublished changes here:\n  ${conflicts.join("\n  ")}\nRerun with --theirs (keep the artifact's) or --ours (keep these), or ask the user which.`);
+    }
+    if (!base && !sameContent(board, remote)) out("note: no merge base was recorded, so the local board was replaced by the artifact's");
+    B.validate(merged);
+    S.saveBoard(merged);
+    S.saveBase(name, remote);
+    S.saveLocal(name, { ...local, dbVersion: v, checkedAt: now });
+    out(`ok: pulled ${name} db version ${v}${local.dbVersion != null ? ` (was ${local.dbVersion})` : ""}`);
+    for (const n of notes) out(`note: ${n}`);
+    if (!sameContent(merged, remote)) {
+      out("merged with unpublished changes here; publish them:");
+      await pushInstruction(merged);
+    }
   },
 
   import({ pos, opts }) {
@@ -449,7 +555,9 @@ async function main(argv) {
   if (!fn) throw new B.BoardError(`unknown command "${cmd}"; run trackerboard help`);
   const args = parseArgs(rest);
   if (args.opts.help) return commands.help();
-  await fn(args);
+  // Every command but help runs under the lock: reads must not see a
+  // half-applied write either.
+  await S.withLock(() => fn(args));
 }
 
 main(process.argv.slice(2)).catch((e) => {

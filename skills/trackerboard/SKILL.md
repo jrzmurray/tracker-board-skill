@@ -36,23 +36,40 @@ trackerboard log "JR ruled the EXCLUDED sites"
 - Deleting a phase removes it from every other phase's deps and says which.
 - Add `--log "…"` to any write to record it in the board's "Recent changes" (keeps the last 40).
 
-Batch several writes, then publish once. Each write prints the publish step; only the last one matters.
+## Staying in sync
+
+Other agents may publish to the same board at any time. The CLI tracks the published version and won't let you write from a stale copy.
+
+**Refresh before you work.** Run `trackerboard refresh` before your first `show` or write in a session. It prints:
+
+```
+refresh: ArtifactData {"action":"get","url":"…","collection":"board","doc_id":"state","out_dir":"~/.trackerboard/remote/<name>"}
+then:    trackerboard pull --board <name> --version <version from the result>
+```
+
+Make that `get` call, then run the `pull` line with the `version` from the result.
+- If nothing changed, `pull` does nothing.
+- Otherwise it merges the published board with any unpublished changes made on this machine. A field changed differently on both sides stops the pull and lists the conflicts. Ask the user which side to keep, then rerun with `--theirs` (the artifact's) or `--ours` (this machine's).
+
+**Writes check freshness.** A write to a linked board is refused if the board hasn't been checked against the artifact in the last 120 seconds (`TRACKERBOARD_FRESH_SECONDS`). The refusal prints the refresh steps; do them, then repeat the write. A `synced` counts as a check, so a batch of writes made right after a refresh or publish goes straight through. `show` adds a note when the copy is stale.
 
 ## Publishing
 
 Every write ends with:
 
 ```
-publish: ArtifactData {"action":"set","url":"…","collection":"board","doc_id":"state","file_path":"…/out/<name>.doc.json","if_version":7}
-then:    trackerboard synced --board <name> --version <version from the result>
+publish: ArtifactData {"action":"set","url":"…","collection":"board","doc_id":"state","file_path":"…/out/docs/<name>-<hash>.json","if_version":7}
+then:    trackerboard synced --board <name> --version <version from the result> --doc …
 ```
 
 The document includes the dependency-graph layout (computed with ELK by the CLI); the page only draws it. If the CLI warns that the layout was skipped, run `npm install` in the trackerboard repo; the publish still works.
 
-Make exactly that `ArtifactData` call (load the tool with ToolSearch `select:ArtifactData` if it is deferred), then run the `synced` line with the `version` from the result. The page updates live for anyone viewing it.
+Make exactly that `ArtifactData` call (load the tool with ToolSearch `select:ArtifactData` if it is deferred), then run the `synced` line with the `version` from the result. The page updates live for anyone viewing it. Batch several writes, then publish once: only the last write's steps matter.
 
-- No `if_version` printed and the write is refused because the document exists: call `ArtifactData` `get` (`collection: "board"`, `doc_id: "state"`, `out_dir:` the scratchpad) to learn the version, run `trackerboard synced --version N`, then `trackerboard push` and retry.
-- Refused for a version mismatch: someone wrote the board from elsewhere. Ask the user whether to overwrite (re-run with the named version) or to pull theirs first: `get` with `out_dir`, then `trackerboard pull --from <saved json> --version N`, then redo your writes.
+- **Refused for a version mismatch:** someone published in between. Run `trackerboard refresh`, make its `get` call, and run `pull`. That merges your changes onto theirs and prints a new publish step; make that call. Nothing needs to be redone.
+- **No `if_version` printed, and the write is refused because the document exists:** do the refresh steps, then `trackerboard push` and retry.
+
+Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 
 **First publish** (a new board, or an old hand-written tracker being replaced): run `trackerboard page`. It writes the page and prints the `Artifact` publish call with the `db` capability. Make that call, then `trackerboard link --url <artifact url>` and `trackerboard push`, and make the printed `ArtifactData` call. After publishing, the page HTML only needs republishing when this skill's page template changes (`trackerboard page` prints that call too).
 

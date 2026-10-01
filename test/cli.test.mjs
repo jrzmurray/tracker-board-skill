@@ -105,6 +105,10 @@ test("page and render embed the board safely", () => {
   assert.match(html, /<title>&lt;\/script&gt;&lt;b&gt;x<\/title>/);
   const data = html.match(/<script type="application\/json" id="tb-data">(.*?)<\/script>/s)[1];
   assert.equal(JSON.parse(data).waves[0].phases[0].title, "</script>");
+  // markdown-it is inlined, once, and cannot close its own script element
+  const md = html.match(/<script id="tb-md">(.*?)<\/script>/s)[1];
+  assert.match(md, /markdownit/);
+  assert.doesNotMatch(md, /<\/script|sourceMappingURL/i);
   assert.match(run(["page"]).stdout, /"capabilities":\{"db"/);
 });
 

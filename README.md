@@ -10,7 +10,7 @@ Hand-maintained tracker artifacts make an agent read and rewrite ~50 KB of HTML 
 ./install.sh
 ```
 
-This symlinks `skills/trackerboard` into `~/.claude/skills/` and the CLI into `~/.local/bin/trackerboard`. It needs Node 20 or newer and runs `npm install` for its one dependency, [elkjs](https://github.com/kieler/elkjs) (the graph layout engine).
+This symlinks `skills/trackerboard` into `~/.claude/skills/` and the CLI into `~/.local/bin/trackerboard`. It needs Node 20 or newer and runs `npm install` for its two dependencies: [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders the text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
 
 ## Use
 

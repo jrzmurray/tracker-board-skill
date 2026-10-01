@@ -14,6 +14,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "elkjs": "0.12.0"
+    "elkjs": "0.12.0",
+    "markdown-it": "15.0.2"
   }
 }

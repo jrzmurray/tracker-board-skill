@@ -94,10 +94,19 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .cols>span:first-child{padding-left:20px}
 .phase[open] .chev{transform:rotate(90deg)}
 .body{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));padding:4px 10px 16px}
-.field h3{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+.field>h3{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
 .field{min-width:0;font-size:14px}
 .field p{margin:0 0 6px;max-width:75ch}
-.field ul{margin:0;padding-left:18px}
+.field ul,.field ol{margin:0 0 6px;padding-left:18px}
+.md>:last-child{margin-bottom:0}
+.md :is(h1,h2,h3,h4,h5,h6){font:600 1em/1.35 var(--display);margin:10px 0 4px;letter-spacing:0;text-transform:none;color:var(--ink)}
+.md :is(h1,h2){font-size:1.08em}
+.md blockquote{margin:0 0 6px;padding-left:10px;border-left:3px solid var(--rule);color:var(--muted)}
+.md table{border-collapse:collapse;margin:0 0 8px;font-size:.95em;display:block;overflow-x:auto;max-width:100%}
+.md :is(th,td){border:1px solid var(--rule);padding:3px 8px;text-align:left;vertical-align:top}
+.md th{background:var(--soft)}
+.md hr{border:0;border-top:1px solid var(--rule);margin:8px 0}
+.md li>p{margin:0}
 .tools{display:flex;gap:8px;flex-wrap:wrap}
 .btn{font:12px var(--mono);background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:4px 10px;cursor:pointer}
 .btn:hover{border-color:var(--accent)}
@@ -144,6 +153,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     <p>Phases appear here once the board is pushed with <code>trackerboard push</code>.</p>
   </section>
 </main>
+<script id="tb-md"></script>
 <script type="application/json" id="tb-data">null</script>
 <script>
 (() => {
@@ -169,36 +179,54 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   const keyOf = (s) => String(s).toLowerCase();
   const domId = (s) => "p-" + String(s).replace(/[^A-Za-z0-9_-]/g, "_");
 
-  // kind: where a bare #1234 links ("pull" or "issues").
+  // Markdown is rendered by markdown-it, which `trackerboard render` inlines
+  // into the page (#tb-md). Raw HTML is escaped (html: false). Older boards
+  // store HTML <code> and <strong> spans, so those become markdown first.
+  const ENTITY = {"&lt;":"<","&gt;":">","&quot;":"\"","&#39;":"'","&amp;":"&"};
+  const fromHtml = (t) => String(t ?? "")
+    .replace(/<code>([\s\S]*?)<\/code>/gi, (_, c) => { c = c.replace(/&(lt|gt|quot|#39|amp);/g, (e) => ENTITY[e]); return c.includes("`") ? "`` " + c + " ``" : "`" + c + "`"; })
+    .replace(/<(strong|b)>([^<]*?)<\/\1>/gi, "**$2**");
+  const mdit = (() => {
+    if (typeof window.markdownit !== "function") return null;
+    const m = window.markdownit({ html: false, linkify: true, breaks: true });
+    // Only explicit URLs autolink: no bare domains, so README.md stays text.
+    m.linkify.set({ fuzzyLink: false, fuzzyEmail: false });
+    const linkText = m.normalizeLinkText;
+    m.normalizeLinkText = (u) => { const t = linkText(u).replace(/^https?:\/\//, ""); return t.length > 60 ? t.slice(0, 59) + "…" : t; };
+    const linkOpen = m.renderer.rules.link_open || ((tokens, i, o, env, self) => self.renderToken(tokens, i, o));
+    m.renderer.rules.link_open = (tokens, i, o, env, self) => {
+      if (/^https?:/.test(tokens[i].attrGet("href") || "")) { tokens[i].attrSet("target", "_blank"); tokens[i].attrSet("rel", "noopener"); }
+      return linkOpen(tokens, i, o, env, self);
+    };
+    // A bare #1234 links to the board's repo: env.kind is "pull" or "issues".
+    m.inline.ruler.after("text", "ghref", (state, silent) => {
+      const { src, pos, env } = state;
+      if (src.charCodeAt(pos) !== 0x23 || !env.repo || state.linkLevel > 0) return false;
+      if (pos > 0 && !/[\s(·,;]/.test(src[pos - 1])) return false;
+      const n = /^#(\d{1,7})(?![\w])/.exec(src.slice(pos));
+      if (!n) return false;
+      if (!silent) {
+        const open = state.push("link_open", "a", 1);
+        open.attrs = [["href", `${env.repo}/${env.kind}/${n[1]}`]];
+        state.push("text", "", 0).content = n[0];
+        state.push("link_close", "a", -1);
+      }
+      state.pos += n[0].length;
+      return true;
+    });
+    return m;
+  })();
+  const mdEnv = (kind) => ({ repo: (board && board.repoUrl || "").replace(/\/+$/, ""), kind });
+  // One line of text (titles, notes, log entries, PR and issue cells).
   function inline(text, kind = "pull") {
-    const repo = (board && board.repoUrl || "").replace(/\/+$/, "");
-    // Code spans first, so nothing inside them is formatted: `x`, `` x `` (may
-    // hold a backtick) and HTML <code>x</code>. Older boards store HTML <code>
-    // and <strong> spans; both render.
-    const codes = [];
-    const keep = (c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; };
-    let s = String(text ?? "")
-      .replace(/<code>([\s\S]*?)<\/code>/gi, (_, c) => keep(c.replace(/&(lt|gt|quot|#39|amp);/g, (e) => ({"&lt;":"<","&gt;":">","&quot;":"\"","&#39;":"'","&amp;":"&"}[e]))))
-      .replace(/``\s?([\s\S]+?)\s?``|`([^`]+)`/g, (_, a, b) => keep(a ?? b));
-    s = esc(s.replace(/<(strong|b)>([^<]*?)<\/\1>/gi, "**$2**"));
-    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
-    s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, p, u) => `${p}<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\//, "").slice(0, 60)}</a>`);
-    if (repo) s = s.replace(/(^|[\s(·,;])#(\d{1,7})\b/g, (_, p, n) => `${p}<a href="${repo}/${kind}/${n}" target="_blank" rel="noopener">#${n}</a>`);
-    return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[i])}</code>`);
+    if (!mdit) return esc(fromHtml(text));
+    return mdit.renderInline(fromHtml(text), mdEnv(kind));
   }
-  // Paragraphs, "- " lists and ``` fenced code blocks; inline() does the rest.
+  // Block markdown (the expandable fields, wave and board notes, the lede).
   function md(text) {
     if (!text) return "";
-    // split() with a capture group alternates prose and fenced code.
-    return String(text).trim().split(/^```[^\n]*\n([\s\S]*?)^```[ \t]*$/m).map((part, i) => {
-      if (i % 2) return `<pre><code>${esc(part.replace(/\n$/, ""))}</code></pre>`;
-      return part.trim().split(/\n{2,}/).filter((b) => b.trim()).map((block) => {
-        const lines = block.split("\n");
-        if (lines.every((l) => /^\s*[-*] /.test(l))) return "<ul>" + lines.map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ""))}</li>`).join("") + "</ul>";
-        return `<p>${lines.map(inline).join("<br>")}</p>`;
-      }).join("");
-    }).join("");
+    if (!mdit) return `<div class="md"><p>${esc(fromHtml(text)).replace(/\n/g, "<br>")}</p></div>`;
+    return `<div class="md">${mdit.render(fromHtml(String(text).trim()), mdEnv("pull"))}</div>`;
   }
   const pill = (st) => `<span class="pill status-${esc(st)}">${esc(LABEL[st] || st)}</span>`;
   const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? esc(iso) : d.toISOString().slice(0, 16).replace("T", " ") + "Z"; };

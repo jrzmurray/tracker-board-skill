@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { layoutBoard } from "./layout.mjs";
 
@@ -13,8 +14,23 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "
 // JSON that is safe inside <script type="application/json">.
 const scriptJson = (v) => JSON.stringify(v).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 
+// markdown-it's browser build, inlined so the page renders markdown with no
+// network access. "</script" cannot appear inside the inline script.
+const require = createRequire(import.meta.url);
+let markdownIt = null;
+function markdownItSource() {
+  if (markdownIt == null) {
+    const file = path.join(path.dirname(require.resolve("markdown-it/package.json")), "dist", "browser", "markdown-it.umd.min.js");
+    markdownIt = fs.readFileSync(file, "utf8").replace(/\n\/\/# sourceMappingURL=\S+\s*$/, "").replace(/<\/(script)/gi, "<\\/$1");
+  }
+  return markdownIt;
+}
+
 export function renderPage(board) {
   let html = fs.readFileSync(TEMPLATE, "utf8");
+  const mdSlot = '<script id="tb-md"></script>';
+  if (!html.includes(mdSlot)) throw new Error("page template is missing the tb-md slot");
+  html = html.replace(mdSlot, () => `<script id="tb-md">${markdownItSource()}</script>`);
   html = html.replace("<title>Tracker Board</title>", `<title>${escapeHtml(board.title || board.name)}</title>`);
   const slot = '<script type="application/json" id="tb-data">null</script>';
   if (!html.includes(slot)) throw new Error("page template is missing the tb-data slot");

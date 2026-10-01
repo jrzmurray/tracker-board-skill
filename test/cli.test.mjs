@@ -259,4 +259,11 @@ esac
   assert.match(run(["show", "--phase", "R-1"]).stdout, /\[review\][\s\S]*issue: #40[\s\S]*pr: #41/);
   assert.match(fs.readFileSync(path.join(dir, "gh.log"), "utf8"), /pr list --json .*closingIssuesReferences --repo acme\/widgets --state open/);
   assert.match(run(["github"], env).stdout, /no changes/);
+
+  // --file overlays a generated file, so a regenerate + import does not undo the overlay.
+  const file = path.join(dir, "gen.json");
+  fs.writeFileSync(file, JSON.stringify({ repoUrl: "https://github.com/acme/widgets", waves: [{ id: "main", phases: [{ id: "R-1" }, { id: "R-2" }] }] }));
+  assert.match(run(["github", "--file", file], env).stdout, /1 phase\(s\) in .*gen\.json updated/);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "review");
+  assert.match(run(["import", "b", "--from", file, "--replace"]).stdout, /already matches/);
 });

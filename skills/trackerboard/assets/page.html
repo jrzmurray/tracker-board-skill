@@ -453,7 +453,15 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       if (w && h) gv.y = Math.min(Math.max(gv.y, -h * 0.75), gl.height - h * 0.25);
       cam.setAttribute("transform", `scale(${gv.k}) translate(${-gv.x},${-gv.y})`);
     };
-    const reset = () => { gv = { k: baseK(), x: 0, y: 0, touched: false, sig }; apply(); };
+    // A graph larger than the box opens on its first wave (or topmost node),
+    // not on the drawing's corner, which may be empty space.
+    const home = () => {
+      const k = baseK();
+      if (gl.width * k <= box.clientWidth + 1 && gl.height * k <= box.clientHeight + 1) return { x: 0, y: 0 };
+      const g = (gl.groups || [])[0] || [...gl.nodes].sort((a, b) => a.y - b.y || a.x - b.x)[0];
+      return g ? { x: Math.max(0, g.x - 12), y: Math.max(0, g.y - 12) } : { x: 0, y: 0 };
+    };
+    const reset = () => { gv = { k: baseK(), ...home(), touched: false, sig }; apply(); };
     const fit = () => {
       const k = Math.min(box.clientWidth / gl.width, box.clientHeight / gl.height, MAX_K);
       gv = { ...gv, k, touched: true, x: -(box.clientWidth / k - gl.width) / 2, y: -(box.clientHeight / k - gl.height) / 2 };

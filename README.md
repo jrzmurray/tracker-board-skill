@@ -61,15 +61,15 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 A project that already tracks its work somewhere else (a requirements file, an issue tracker export) can generate a board instead of editing one. The board JSON is the interface: write it in the format of [board.schema.json](skills/trackerboard/board.schema.json) and hand it to the CLI. Only `waves`, wave `id` and phase `id` are required; other fields default to empty, `status` accepts aliases such as `planned` and `in_progress`, and `deps` may be a list or a comma string. Unknown fields are rejected, so a generator typo fails instead of being dropped.
 
 ```bash
-my-generator > board.json                          # your project's script
-trackerboard import roadmap --from board.json       # first time
+my-generator > board.json                           # your project's script
+trackerboard github --file board.json                # overlay work that has not merged yet
+trackerboard import roadmap --from board.json        # first time
 trackerboard import roadmap --from board.json --replace --keep owner   # every refresh
-trackerboard github --board roadmap                 # overlay work that has not merged yet
 trackerboard render --board roadmap --out roadmap.html
 ```
 
 - `import --replace` replaces the board's content with the file's, keeps its bindings, artifact link and log, and logs the status changes, additions and removals. `--keep` names phase fields the board owns rather than the generator, such as an `owner` set by agents. On a linked board it prints the usual publish step.
-- `github` reads open PRs and issues with the GitHub CLI (`gh`) from `--repo` or the board's `repoUrl`. A PR or issue that mentions a phase id in its title, branch name or labels (add `--in title,branch,labels,body` to search bodies) adds itself to the phase's PR or Issue field, and a PR is also credited to the phases whose issues it closes. An open PR moves a `todo` or `waiting` phase to `active` (draft) or `review` (ready). Nothing moves backward and nothing is removed, so it is safe to run after every import. `--dry-run` lists the changes without writing.
+- `github` reads open PRs and issues with the GitHub CLI (`gh`) from `--repo` or the board's `repoUrl`. A PR or issue that mentions a phase id in its title, branch name or labels (add `--in title,branch,labels,body` to search bodies) adds itself to the phase's PR or Issue field, and a PR is also credited to the phases whose issues it closes. An open PR moves a `todo` or `waiting` phase to `active` (draft) or `review` (ready). Nothing moves backward and nothing is removed. `--dry-run` lists the changes without writing. With `--file` it updates a board JSON file instead of a board; run it on the generated file before `import --replace`, so each refresh is one change and an unchanged refresh changes nothing.
 - `render` writes a self-contained HTML file that opens with nothing else running.
 
 ## Board resolution

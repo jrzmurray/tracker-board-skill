@@ -66,10 +66,12 @@ Generated boards (the input format is board.schema.json)
   import [name] --from FILE --replace [--keep owner,note]
                           Update an existing board from regenerated JSON; logs status
                           changes, adds and removals. --keep: phase fields the board keeps.
-  github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run]
+  github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE]
                           Find phase ids in open PRs and issues: fill --pr and --issue,
                           and move todo/waiting -> active (draft PR) or review (ready PR).
                           Never moves a phase back. --repo defaults to the board's repo URL.
+                          --file: update a board JSON file instead (run it before
+                          import --replace so the overlay is not undone by each import).
 `;
 
 // ---------- args ----------
@@ -609,6 +611,7 @@ const commands = {
     if (!name) throw new B.BoardError("import needs a board name: an argument, --board, or \"name\" in the file");
     S.checkName(name);
     incoming.name = name;
+    incoming.title ||= name;
     if (!opts.replace) {
       if (opts.keep) throw new B.BoardError("--keep only applies with --replace");
       if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; pass --replace to update it from this file`);
@@ -654,12 +657,23 @@ const commands = {
       removed.length && `${removed.length} removed: ${list(removed)}`,
     ].filter(Boolean);
     if (!opts.log && parts.length) B.appendLog(incoming, `import: ${parts.join("; ")}`);
-    await commit(incoming, opts, `replaced ${name} from ${opts.from} (${changed} changed, ${added.length} added, ${removed.length} removed)`);
+    const what = changed || added.length || removed.length ? `${changed} changed, ${added.length} added, ${removed.length} removed` : "board fields only";
+    await commit(incoming, opts, `replaced ${name} from ${opts.from} (${what})`);
   },
 
   async github({ opts }) {
-    const name = boardName(opts);
-    const board = S.loadBoard(name);
+    // --file: overlay a board JSON file in place, before `import --replace`,
+    // so a regenerated board and its overlay land as one change.
+    let board;
+    if (opts.file) {
+      try {
+        board = B.normalizeBoard(JSON.parse(fs.readFileSync(opts.file, "utf8")));
+      } catch (e) {
+        throw e instanceof B.BoardError ? e : new B.BoardError(`cannot read ${opts.file}: ${e.message}`);
+      }
+    } else {
+      board = S.loadBoard(boardName(opts));
+    }
     const sources = opts.in ? B.parseList(opts.in) : G.DEFAULT_SOURCES;
     for (const s of sources) if (!G.SOURCES.includes(s)) throw new B.BoardError(`--in: unknown source "${s}"; sources: ${G.SOURCES.join(", ")}`);
     const repo = opts.repo || (board.repoUrl.match(/github\.com[/:]([^/]+\/[^/#?]+?)(?:\.git)?\/?$/) || [])[1] || null;
@@ -678,6 +692,10 @@ const commands = {
     if (!changes.length) return out(`ok: no changes from ${scanned}`);
     for (const c of changes) out(`  ${G.describeChange(c)}`);
     if (opts["dry-run"]) return out(`dry run: ${changes.length} phase(s) would change from ${scanned}`);
+    if (opts.file) {
+      fs.writeFileSync(opts.file, JSON.stringify(board, null, 2) + "\n");
+      return out(`ok: ${changes.length} phase(s) in ${opts.file} updated from ${scanned}`);
+    }
     if (!opts.log) {
       const moved = changes.filter((c) => c.status).map((c) => `${c.id} ${c.status[1]}`);
       B.appendLog(board, `github: ${changes.length} phase(s) updated from open PRs/issues${moved.length ? ` (${moved.slice(0, 8).join(", ")}${moved.length > 8 ? ", …" : ""})` : ""}`);

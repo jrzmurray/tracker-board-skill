@@ -40,7 +40,8 @@ Write (--board is optional when exactly one board resolves from the cwd)
   log "<text>"                            Append to the board's change log.
 
 Phase fields
-  --title --lane --owner --status --note --req --pr --review --notes --deps A,B
+  --title --lane --owner --status --note --req --issue --pr --review --notes --deps A,B
+  --issue: the GitHub issue (#1234, or a bare number).
   --owner: who is working the phase (agent id or person); "" clears it.
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
@@ -187,7 +188,7 @@ const short = (s, n = 70) => {
 
 function showPhase(wave, p) {
   out(`${p.id}  [${p.status}]  wave ${wave.id}${p.lane ? `  lane ${p.lane}` : ""}${p.owner ? `  owner ${p.owner}` : ""}`);
-  for (const f of ["title", "note", "deps", "pr", "review", "req", "notes"]) {
+  for (const f of ["title", "note", "deps", "issue", "pr", "review", "req", "notes"]) {
     const v = f === "deps" ? p.deps.join(", ") : p[f];
     if (v) out(`  ${f}: ${v}`);
   }
@@ -609,6 +610,9 @@ const commands = {
 commands.ls = commands.boards;
 commands.rm = commands.delete;
 
+// A reader that closes early (`show | head`) is not an error.
+process.stdout.on("error", (e) => { if (e.code === "EPIPE") process.exit(0); throw e; });
+
 async function main(argv) {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "--help" || cmd === "-h") return commands.help();
@@ -616,9 +620,12 @@ async function main(argv) {
   if (!fn) throw new B.BoardError(`unknown command "${cmd}"; run trackerboard help`);
   const args = parseArgs(rest);
   if (args.opts.help) return commands.help();
-  // Every command but help runs under the lock: reads must not see a
-  // half-applied write either.
-  await S.withLock(() => fn(args));
+  // Commands that change state run under the lock. Reads skip it: every
+  // write replaces its file atomically, so a read never sees half of one.
+  const dep = args.pos[0];
+  const reads = cmd === "show" || cmd === "boards" || cmd === "ls" || cmd === "render" || cmd === "refresh" ||
+    (cmd === "dep" && ["list", "graph", "ready"].includes(dep));
+  await (reads ? fn(args) : S.withLock(() => fn(args)));
 }
 
 main(process.argv.slice(2)).catch((e) => {

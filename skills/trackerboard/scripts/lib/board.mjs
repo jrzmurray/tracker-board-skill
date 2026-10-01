@@ -22,7 +22,7 @@ const STATUS_ALIASES = {
 };
 
 // Phase fields settable from the CLI. `deps` is handled by the graph helpers.
-export const PHASE_FIELDS = ["title", "lane", "owner", "status", "note", "req", "pr", "review", "notes", "deps"];
+export const PHASE_FIELDS = ["title", "lane", "owner", "status", "note", "req", "issue", "pr", "review", "notes", "deps"];
 export const WAVE_FIELDS = ["title", "prefix", "notes"];
 export const BOARD_FIELDS = ["title", "subtitle", "lede", "notes", "repoUrl"];
 
@@ -235,7 +235,7 @@ export function insertPhase(board, phaseId, fields = {}, { wave: waveId } = {}) 
     throw new BoardError(`phase "${phaseId}" already exists in wave "${wave.id}"; use update`);
   }
   if (existing.length) throw new BoardError(`phase "${phaseId}" already exists in wave "${existing[0].wave.id}"; ids are unique per board`);
-  const phase = { id: String(phaseId), title: "", lane: "", owner: "", status: "todo", note: "", req: "", pr: "", review: "", notes: "", deps: [] };
+  const phase = { id: String(phaseId), title: "", lane: "", owner: "", status: "todo", note: "", req: "", issue: "", pr: "", review: "", notes: "", deps: [] };
   applyFields(phase, fields, PHASE_FIELDS, "phase");
   wave.phases.splice(insertionIndex(wave.phases, phase.id), 0, phase);
   if (fields.deps != null) setDeps(board, phase.id, parseList(fields.deps));

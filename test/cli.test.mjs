@@ -135,6 +135,8 @@ test("owner is a phase field: set, shown, cleared", () => {
   run(["insert", "--phase", "P1", "--title", "first", "--owner", "builder-3"]);
   assert.match(run(["show"]).stdout, /P1 +todo +first +@builder-3/);
   assert.match(run(["show", "--phase", "P1"]).stdout, /owner builder-3/);
+  run(["update", "--phase", "P1", "--issue", "#77"]);
+  assert.match(run(["show", "--phase", "P1"]).stdout, /issue: #77/);
   run(["update", "--phase", "P1", "--owner", ""]);
   assert.doesNotMatch(run(["show"]).stdout, /@builder-3/);
 });

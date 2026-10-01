@@ -38,7 +38,7 @@ Multi-PR plans in this repo are tracked with trackerboard. Before starting or up
 ```
 board  name title subtitle lede notes repoUrl log[] waves[]
 wave   id title prefix notes phases[]
-phase  id title lane owner status note req pr review notes deps[]
+phase  id title lane owner status note req issue pr review notes deps[]
 ```
 
 `status` is one of `todo active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; `trackerboard dep graph` prints it as mermaid.

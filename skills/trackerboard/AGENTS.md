@@ -33,7 +33,7 @@ trackerboard insert --wave B --title "Wave B" --prefix B-
 trackerboard log "decision: …"
 ```
 
-- Phase fields: `--title --lane --owner --status --note --req --pr --review --notes --deps`. `--req`, `--review` and `--notes` are the expandable details. A value of `@file.md` reads the field from a file, and `-` reads it from stdin.
+- Phase fields: `--title --lane --owner --status --note --req --issue --pr --review --notes --deps`. `--issue` is the GitHub issue the phase works (`#1234`). `--req`, `--review` and `--notes` are the expandable details. A value of `@file.md` reads the field from a file, and `-` reads it from stdin.
 - Status: `todo active review waiting blocked done ongoing external dropped`. Aliases such as `merged` and `in-progress` are accepted.
 - A phase's position comes from its id. `P0.1` or `P0-1` goes right after `P0`, even if `P1` exists. Insert never overwrites: it fails if the id already exists.
 - `--wave` is optional. A new phase goes to the wave of its parent id, then to a wave whose prefix matches, then to the only wave.

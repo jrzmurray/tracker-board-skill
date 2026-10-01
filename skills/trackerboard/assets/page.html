@@ -50,6 +50,9 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .wavehead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:10px}
 .wavehead .wid{font:600 12px var(--mono);color:var(--accent);background:var(--accent-tint);padding:1px 7px;border-radius:3px}
 .wavehead .count{font:12px var(--mono);color:var(--muted);margin-left:auto}
+.lanegroup+.lanegroup{margin-top:22px}
+.lanehead h3{font:600 15px var(--display);margin:0}
+.wavehead+.lanegroup>.lanehead{margin-top:4px}
 .wavenotes{color:var(--muted);font-size:14px;margin:-4px 0 10px;max-width:80ch}
 .cols,.phase>summary{display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(130px,1fr) minmax(90px,.7fr) minmax(110px,.8fr) 48px;gap:12px;align-items:start}
 .cols{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding:0 10px 6px;border-bottom:1px solid var(--rule)}
@@ -172,7 +175,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const body = fields.length ? fields.map(([h, v]) => `<div class="field"><h3>${h}</h3>${md(v)}</div>`).join("") : `<div class="field" style="color:var(--muted)">No details recorded.</div>`;
     return `<details class="phase" id="${domId(phase.id)}" ${openIds.has(phase.id) ? "open" : ""}>
       <summary>
-        <div><span class="pid">${esc(phase.id)}</span>${phase.lane ? `<span class="lane">${esc(phase.lane)}</span>` : ""}<span class="ptitle">${inline(phase.title)}</span></div>
+        <div><span class="pid">${esc(phase.id)}</span><span class="ptitle">${inline(phase.title)}</span></div>
         <div>${pill(phase.status)}${phase.note ? `<span class="snote">${inline(phase.note)}</span>` : ""}</div>
         <div class="deps">${deps}</div>
         <div class="prc">${phase.pr ? inline(phase.pr) : `<span style="color:var(--muted)">—</span>`}</div>
@@ -182,18 +185,37 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     </details>`;
   }
 
+  // One panel per wave; inside it, one table per lane (the phases' lane field,
+  // in order of first use). The first lane's header doubles as the panel
+  // header when the wave is the board's only, untitled one.
   function waves(b) {
     const statusOf = new Map(phasesOf(b).map(({ phase }) => [keyOf(phase.id), phase.status]));
     const single = b.waves.length === 1 && !b.waves[0].title && !b.waves[0].notes;
+    const cols = `<div class="cols"><span>Phase</span><span>Status</span><span>Depends on</span><span>PR</span><span></span></div>`;
+    const tally = (ps) => `<span class="count">${ps.filter((p) => p.status === "done").length}/${ps.length} done</span>`;
     return b.waves.map((w) => {
-      const rows = w.phases.filter((p) => !filter || p.status === filter);
-      if (filter && !rows.length) return "";
-      const done = w.phases.filter((p) => p.status === "done").length;
+      const lanes = new Map();
+      for (const p of w.phases) {
+        const k = String(p.lane || "").trim();
+        if (!lanes.has(k)) lanes.set(k, []);
+        lanes.get(k).push(p);
+      }
+      const groups = [...lanes].map(([lane, ps]) => ({ lane, ps, rows: ps.filter((p) => !filter || p.status === filter) }))
+        .filter((g) => !filter || g.rows.length);
+      if (filter && !groups.length) return "";
+      const laneHead = (g, tag) => `<div class="wavehead lanehead"><${tag}>${g.lane ? `Lane ${esc(g.lane)}` : "No lane"}</${tag}>${tally(g.ps)}</div>`;
+      const tables = groups.map((g, i) => `<div class="lanegroup">
+          ${single && i === 0 ? "" : laneHead(g, single ? "h2" : "h3")}
+          ${cols}
+          ${g.rows.map((p) => phaseRow(b, p, statusOf)).join("")}
+        </div>`).join("");
+      const head = single
+        ? (groups.length ? laneHead(groups[0], "h2") : `<div class="wavehead"><h2>Phases</h2>${tally(w.phases)}</div>`)
+        : `<div class="wavehead"><span class="wid">${esc(w.id)}</span><h2>${inline(w.title || "Wave " + w.id)}</h2>${tally(w.phases)}</div>`;
       return `<section class="panel" aria-label="Wave ${esc(w.id)}">
-        <div class="wavehead">${single ? `<h2>Phases</h2>` : `<span class="wid">${esc(w.id)}</span><h2>${inline(w.title || "Wave " + w.id)}</h2>`}<span class="count">${done}/${w.phases.length} done</span></div>
+        ${head}
         ${w.notes ? `<div class="wavenotes">${md(w.notes)}</div>` : ""}
-        <div class="cols"><span>Phase</span><span>Status</span><span>Depends on</span><span>PR</span><span></span></div>
-        ${rows.length ? rows.map((p) => phaseRow(b, p, statusOf)).join("") : `<p style="color:var(--muted);margin:10px">No phases yet.</p>`}
+        ${tables || `<p style="color:var(--muted);margin:10px">No phases yet.</p>`}
       </section>`;
     }).join("");
   }

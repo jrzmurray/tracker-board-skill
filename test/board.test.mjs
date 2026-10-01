@@ -145,3 +145,15 @@ test("ELK layout: null without deps, non-overlapping nodes, edges touch their no
   }
   for (const n of L.nodes) assert.ok(n.x + n.w <= L.width && n.y + n.h <= L.height);
 });
+
+test("HTML <code> and <strong> spans in text fields are stored as markdown backticks", () => {
+  assert.equal(B.htmlToMarkdown("via <code>claimWorkers</code> and <CODE>a &lt; b</CODE>"), "via `claimWorkers` and `a < b`");
+  assert.equal(B.htmlToMarkdown("<code>x`y</code>"), "`` x`y ``");
+  assert.equal(B.htmlToMarkdown("already `code`"), "already `code`");
+  assert.equal(B.htmlToMarkdown("<strong>JR ratifies</strong> it"), "**JR ratifies** it");
+  const b = B.newBoard("t");
+  B.insertPhase(b, "P1", { notes: "wire <code>gate:census-diff</code>" });
+  assert.equal(B.allPhases(b)[0].phase.notes, "wire `gate:census-diff`");
+  B.appendLog(b, "set <code>X</code>");
+  assert.equal(b.log[0].text, "set `X`");
+});

@@ -218,11 +218,21 @@ export function deleteWave(board, waveId, { force } = {}) {
 
 // ---------- phases ----------
 
+// Text fields are markdown. HTML <code>...</code> and <strong>/<b> spans,
+// which agents sometimes write, are stored as backtick and ** spans.
+const ENTITY = { "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#39;": "'", "&amp;": "&" };
+export function htmlToMarkdown(text) {
+  return String(text).replace(/<code>([\s\S]*?)<\/code>/gi, (_, c) => {
+    c = c.replace(/&(lt|gt|quot|#39|amp);/g, (e) => ENTITY[e]);
+    return c.includes("`") ? `\`\` ${c} \`\`` : `\`${c}\``;
+  }).replace(/<(strong|b)>([^<]*?)<\/\1>/gi, "**$2**");
+}
+
 function applyFields(target, fields, allowed, what) {
   for (const [k, v] of Object.entries(fields)) {
     if (!allowed.includes(k)) throw new BoardError(`unknown ${what} field "${k}"; fields: ${allowed.join(", ")}`);
     if (k === "deps") continue;
-    target[k] = k === "status" ? normalizeStatus(v) : String(v);
+    target[k] = k === "status" ? normalizeStatus(v) : htmlToMarkdown(v);
   }
 }
 
@@ -368,7 +378,7 @@ export function readyPhases(board) {
 
 export function appendLog(board, text, at = new Date().toISOString()) {
   if (!text) return;
-  board.log.unshift({ at, text: String(text) });
+  board.log.unshift({ at, text: htmlToMarkdown(text) });
   board.log.length = Math.min(board.log.length, LOG_LIMIT);
 }
 
@@ -388,7 +398,7 @@ export function normalizeBoard(input) {
   const str = (v, err, f) => {
     if (v == null) return "";
     if (typeof v === "object") throw err(`${f} must be a string`);
-    return String(v);
+    return htmlToMarkdown(v);
   };
   const boardErr = where("board");
   strict(input, ["schema", "name", ...BOARD_FIELDS, "waves", "log", "updatedAt", "layout"], boardErr);
@@ -422,7 +432,7 @@ export function normalizeBoard(input) {
     return wave;
   });
   board.log = Array.isArray(input.log)
-    ? input.log.filter((e) => e && e.text).map((e) => ({ at: String(e.at || new Date().toISOString()), text: String(e.text) })).slice(0, LOG_LIMIT)
+    ? input.log.filter((e) => e && e.text).map((e) => ({ at: String(e.at || new Date().toISOString()), text: htmlToMarkdown(e.text) })).slice(0, LOG_LIMIT)
     : [];
   board.updatedAt = input.updatedAt ? String(input.updatedAt) : new Date().toISOString();
   validate(board);

@@ -2,6 +2,8 @@
 
 Multi-PR plans are tracked on a board of waves and phases, edited with the `trackerboard` CLI. A board is JSON under `~/.trackerboard/boards/`. Its published page renders that JSON. Never edit, regenerate or read the page HTML to change status. Run a command instead.
 
+Run the CLI as `trackerboard` if it is on PATH. Otherwise run `node <skill dir>/scripts/trackerboard.mjs`, where the skill dir is wherever the trackerboard skill is installed (the repo's `.claude/skills/trackerboard` or `~/.claude/skills/trackerboard`).
+
 ## Rules
 
 - Run `trackerboard show` before you start work. It lists each phase's status, owner and deps, plus the phases whose deps are all done. Use `show --phase X` for one phase in full. Prefer these to opening the published page.

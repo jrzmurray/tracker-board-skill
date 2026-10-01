@@ -78,8 +78,14 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .tools{display:flex;gap:8px;flex-wrap:wrap}
 .btn{font:12px var(--mono);background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-radius:5px;padding:4px 10px;cursor:pointer}
 .btn:hover{border-color:var(--accent)}
-.graphwrap{overflow-x:auto;margin-top:8px}
-.graphwrap svg text{font-family:var(--mono)}
+.gview{position:relative;margin-top:8px;border:1px solid var(--rule);border-radius:6px;background:var(--paper);overflow:hidden;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+.gview.panning{cursor:grabbing}
+.gview svg{display:block;width:100%;height:100%}
+.gview svg text{font-family:var(--mono)}
+.gnode:focus-visible rect{stroke:var(--accent);stroke-width:2.5}
+.gctl{position:absolute;top:8px;right:8px;display:flex;gap:4px}
+.gctl .btn{padding:2px 8px;min-width:30px;background:var(--paper);box-shadow:0 1px 2px rgb(0 0 0 / .12)}
+.ghint{font-size:12px;color:var(--muted);margin-top:6px}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin-top:10px}
 .log{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .log li{display:grid;grid-template-columns:150px 1fr;gap:12px;font-size:14px}
@@ -226,7 +232,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       if (ci > 0) c.sort((a, z) => bary(a) - bary(z));
       c.forEach((p, i) => row.set(p.id, i));
     });
-    const W = 168, H = 42, GX = 56, GY = 14, PAD = 8;
+    const W = 232, H = 44, GX = 44, GY = 14, PAD = 8;
     const maxRows = Math.max(...cols.map((c) => c.length));
     const pos = new Map();
     const nodes = all.map((p) => {
@@ -261,11 +267,53 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 
   const clip = (s, n) => s.length > n ? s.slice(0, Math.max(1, n - 1)) + "…" : s;
 
+  // Node label: "ID - title" as one flow of 11px mono text over two lines, the
+  // ID bold. Wraps at spaces; a word longer than a line is cut. Overflow on the
+  // second line ends in an ellipsis.
+  const CH = 6.6; // JetBrains Mono advance at 11px
+  function labelLines(id, title, w) {
+    const per = Math.max(8, Math.floor((w - 20) / CH));
+    const words = (id + (title ? " - " + title : "")).split(/\s+/).filter(Boolean);
+    const lines = [""];
+    for (let word of words) {
+      while (word) {
+        const cur = lines[lines.length - 1];
+        const room = per - cur.length - (cur ? 1 : 0);
+        if (word.length <= room) { lines[lines.length - 1] = cur ? cur + " " + word : word; word = ""; }
+        else if (!cur) { lines[lines.length - 1] = word.slice(0, per); word = word.slice(per); lines.push(""); }
+        else lines.push("");
+        if (lines.length > 2) break;
+      }
+      if (lines.length > 2) break;
+    }
+    const over = lines.length > 2;
+    const out = lines.slice(0, 2).filter((l, i) => l || i === 0);
+    if (over) out[1] = clip(out[1] + " …", per).replace(/ ?…$/, "…");
+    return out;
+  }
+  function labelSvg(id, title, n) {
+    const lines = labelLines(id, title, n.w);
+    const pad = n.h / 2 - (lines.length === 1 ? -4 : 3.5);
+    return lines.map((line, i) => {
+      const y = n.y + pad + i * 15;
+      let body = esc(line);
+      if (i === 0) {
+        const bold = line.slice(0, Math.min(line.length, id.length));
+        body = `<tspan font-weight="700" fill="var(--ink)">${esc(bold)}</tspan>${esc(line.slice(bold.length))}`;
+      } else if (lines[0].length < id.length) {
+        const rest = id.slice(lines[0].length), bold = line.slice(0, Math.min(line.length, rest.length));
+        body = `<tspan font-weight="700" fill="var(--ink)">${esc(bold)}</tspan>${esc(line.slice(bold.length))}`;
+      }
+      return `<text x="${n.x + 10}" y="${y}" font-size="11" fill="var(--ink)" fill-opacity=".86">${body}</text>`;
+    }).join("");
+  }
+
   function graph(b) {
     const all = phasesOf(b).map(({ phase }) => phase);
-    if (!all.some((p) => p.deps.length)) return "";
+    if (!all.some((p) => p.deps.length)) { gl = null; return ""; }
     const byKey = new Map(all.map((p) => [keyOf(p.id), p]));
     const L = graphLayout(b, all);
+    gl = L;
     const groups = (L.groups || []).map((g) => `<g class="gwave">
       <rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="8" fill="var(--soft)" fill-opacity=".45" stroke="var(--rule)"/>
       <text x="${g.x + 12}" y="${g.y + 19}" font-size="11" font-weight="600" fill="var(--muted)">${esc(clip(g.title ? `${g.wave} · ${g.title}` : g.wave, Math.floor((g.w - 24) / 6.6)))}</text></g>`).join("");
@@ -273,17 +321,110 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const nodes = L.nodes.map((n) => {
       const p = byKey.get(keyOf(n.id)); if (!p) return "";
       const title = String(p.title || "").replace(/[`*]/g, "");
-      return `<g class="gnode" data-jump="${esc(p.id)}" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(LABEL[p.status])}">
+      return `<g class="gnode" data-jump="${esc(p.id)}" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(title)} (${esc(LABEL[p.status])})">
         <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="6" fill="var(--${p.status}-bg)" stroke="var(--${p.status})" stroke-width="1.2"/>
-        <text x="${n.x + 10}" y="${n.y + 17}" font-size="12" font-weight="600" fill="var(--ink)">${esc(clip(p.id, Math.floor((n.w - 18) / 7.2)))}</text>
-        <text x="${n.x + 10}" y="${n.y + 32}" font-size="10.5" fill="var(--muted)">${esc(clip(title, Math.floor((n.w - 18) / 6.3)))}</text>
-        <title>${esc(p.id)} · ${esc(LABEL[p.status])}${title ? " · " + esc(title) : ""}</title></g>`;
+        ${labelSvg(p.id, title, n)}
+        <title>${esc(p.id)} - ${esc(title)} (${esc(LABEL[p.status])})</title></g>`;
     }).join("");
     const legend = STATUS.filter((s) => all.some((p) => p.status === s)).map((s) => `<span>${pill(s)}</span>`).join("");
     return `<section class="panel" aria-label="Dependency graph"><h2>Dependency graph</h2>
-      <div class="graphwrap"><svg width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
+      <div class="gview" id="tb-gview"><svg viewBox="0 0 ${L.width} ${L.height}" role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
       <defs><marker id="tb-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
-      ${groups}${edges}${nodes}</svg></div><div class="legend">${legend}</div></section>`;
+      ${groups}${edges}${nodes}</svg>
+      <div class="gctl"><button class="btn" data-gz="out" aria-label="Zoom out">−</button><button class="btn" data-gz="in" aria-label="Zoom in">+</button><button class="btn" data-gz="fit" aria-label="Fit whole graph">Fit</button><button class="btn" data-gz="reset" aria-label="Reset view">Reset</button></div></div>
+      <div class="ghint">Drag to pan · ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"}+scroll or pinch to zoom · click a phase to open it</div>
+      <div class="legend">${legend}</div></section>`;
+  }
+
+  // Pan/zoom over the graph by rewriting the viewBox. k is screen px per graph
+  // unit. The box starts at the smallest scale that keeps 11px labels legible
+  // (or fits the whole graph if that is larger), and grows tall enough to show
+  // the graph at that scale, up to most of the window.
+  const MIN_READ = 0.9, MAX_K = 2.5;
+  let gl = null, gv = null; // gv: {k, x, y, touched, sig}
+  function initGraph() {
+    const box = document.getElementById("tb-gview");
+    if (!box || !gl) return;
+    const svg = box.querySelector("svg");
+    const sig = `${gl.width}x${gl.height}`;
+    const minK = () => Math.min(MIN_READ, box.clientWidth / gl.width, 1);
+    const baseK = () => Math.min(1, Math.max(MIN_READ, box.clientWidth / gl.width));
+    const size = () => {
+      const maxH = Math.max(280, Math.round(window.innerHeight * 0.72));
+      box.style.height = Math.min(maxH, Math.ceil(gl.height * baseK()) + 2) + "px";
+    };
+    const apply = () => {
+      const w = box.clientWidth / gv.k, h = box.clientHeight / gv.k;
+      // keep at least a quarter of the view on the graph
+      gv.x = Math.min(Math.max(gv.x, -w * 0.75), gl.width - w * 0.25);
+      gv.y = Math.min(Math.max(gv.y, -h * 0.75), gl.height - h * 0.25);
+      svg.setAttribute("viewBox", `${gv.x} ${gv.y} ${w} ${h}`);
+    };
+    const reset = () => { gv = { k: baseK(), x: 0, y: 0, touched: false, sig }; apply(); };
+    const fit = () => {
+      const k = Math.min(box.clientWidth / gl.width, box.clientHeight / gl.height, MAX_K);
+      gv = { ...gv, k, touched: true, x: -(box.clientWidth / k - gl.width) / 2, y: -(box.clientHeight / k - gl.height) / 2 };
+      apply();
+    };
+    const zoomAt = (f, cx, cy) => {
+      const k = Math.min(MAX_K, Math.max(Math.min(0.15, minK()), gv.k * f));
+      gv.x += cx / gv.k - cx / k; gv.y += cy / gv.k - cy / k; gv.k = k; gv.touched = true;
+      apply();
+    };
+    size();
+    if (!gv || gv.sig !== sig || !gv.touched) reset(); else apply();
+
+    box.querySelector(".gctl").addEventListener("click", (e) => {
+      const z = e.target.closest("[data-gz]")?.dataset.gz; if (!z) return;
+      e.stopPropagation();
+      const c = [box.clientWidth / 2, box.clientHeight / 2];
+      if (z === "in") zoomAt(1.25, ...c); else if (z === "out") zoomAt(0.8, ...c);
+      else if (z === "fit") fit(); else reset();
+    });
+    box.addEventListener("wheel", (e) => {
+      const r = box.getBoundingClientRect();
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); zoomAt(Math.exp(-e.deltaY * 0.0025), e.clientX - r.left, e.clientY - r.top); }
+      else if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) { e.preventDefault(); gv.x += e.deltaX / gv.k; gv.touched = true; apply(); }
+    }, { passive: false });
+
+    // Pointer pan and two-finger pinch. A drag of more than 4px swallows the
+    // click that follows, so panning never opens a phase.
+    const pts = new Map();
+    let start = null, moved = false, pinch = null;
+    box.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".gctl")) return;
+      pts.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pts.size === 1) { start = { px: e.clientX, py: e.clientY, x: gv.x, y: gv.y }; moved = false; }
+      if (pts.size === 2) { const [a, b2] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b2[0], a[1] - b2[1]), k: gv.k }; }
+    });
+    box.addEventListener("pointermove", (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, [e.clientX, e.clientY]);
+      const r = box.getBoundingClientRect();
+      if (pts.size >= 2 && pinch) {
+        const [a, b2] = [...pts.values()];
+        const d = Math.hypot(a[0] - b2[0], a[1] - b2[1]);
+        moved = true;
+        zoomAt((pinch.k * d / pinch.d) / gv.k, (a[0] + b2[0]) / 2 - r.left, (a[1] + b2[1]) / 2 - r.top);
+        return;
+      }
+      if (!start) return;
+      const dx = e.clientX - start.px, dy = e.clientY - start.py;
+      if (!moved && Math.hypot(dx, dy) < 4) return;
+      if (!moved) { moved = true; box.setPointerCapture(e.pointerId); box.classList.add("panning"); }
+      gv.x = start.x - dx / gv.k; gv.y = start.y - dy / gv.k; gv.touched = true;
+      apply();
+    });
+    const end = (e) => {
+      pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (!pts.size) { start = null; box.classList.remove("panning"); }
+    };
+    box.addEventListener("pointerup", end);
+    box.addEventListener("pointercancel", end);
+    box.addEventListener("click", (e) => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+
+    new ResizeObserver(() => { if (!document.body.contains(box)) return; if (!gv.touched) { size(); reset(); } else apply(); }).observe(box);
   }
 
   function render() {
@@ -303,6 +444,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       ${graph(board)}
       ${board.log && board.log.length ? `<section class="panel" aria-label="Change log"><h2 style="margin-bottom:10px">Recent changes</h2><ul class="log">${board.log.map((e) => `<li><time datetime="${esc(e.at)}">${fmtTime(e.at)}</time><div>${inline(e.text)}</div></li>`).join("")}</ul></section>` : ""}
       ${board.notes ? `<section class="panel notes" aria-label="Notes"><h2 style="margin-bottom:10px">Notes</h2>${md(board.notes)}</section>` : ""}`;
+    initGraph();
   }
 
   app.addEventListener("click", (e) => {

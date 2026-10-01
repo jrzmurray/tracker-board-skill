@@ -2,3 +2,9 @@ node_modules/
 .DS_Store
 .claude/settings.local.json
 preview/
+# Board data and published-doc snapshots (normally under ~/.trackerboard, but
+# never commit them if TRACKERBOARD_HOME points inside a repo)
+.trackerboard/
+*.doc.json
+*.local.json
+*.page.html

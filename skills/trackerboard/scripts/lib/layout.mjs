@@ -16,15 +16,10 @@ function engine() {
   return elk;
 }
 
-export const NODE_H = 42;
-const CHAR_W = 7.2; // JetBrains Mono at 12px
-const MIN_W = 96, MAX_W = 220, TITLE_MAX = 26;
-
-export function nodeWidth(phase) {
-  const title = String(phase.title || "").replace(/[`*]/g, "");
-  const chars = Math.max(phase.id.length, Math.min(title.length, TITLE_MAX) * 0.9);
-  return Math.round(Math.min(MAX_W, Math.max(MIN_W, chars * CHAR_W + 22)));
-}
+// Every node is the same size so each layer forms one left-aligned column.
+// The page wraps "ID - title" over two lines of 11px mono inside it.
+export const NODE_W = 232;
+export const NODE_H = 44;
 
 const ROOT_OPTIONS = {
   "elk.algorithm": "layered",
@@ -32,6 +27,7 @@ const ROOT_OPTIONS = {
   "elk.edgeRouting": "ORTHOGONAL",
   "elk.hierarchyHandling": "INCLUDE_CHILDREN",
   "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+  "elk.alignment": "LEFT",
   "elk.layered.spacing.nodeNodeBetweenLayers": "44",
   "elk.spacing.nodeNode": "14",
   "elk.spacing.edgeNode": "12",
@@ -49,7 +45,7 @@ export async function layoutBoard(board) {
 
   const index = new Map(entries.map(({ phase }, i) => [phase.id.toLowerCase(), i]));
   const grouped = board.waves.filter((w) => w.phases.length).length > 1;
-  const leaf = ({ phase }) => ({ id: sid(index.get(phase.id.toLowerCase())), width: nodeWidth(phase), height: NODE_H });
+  const leaf = ({ phase }) => ({ id: sid(index.get(phase.id.toLowerCase())), width: NODE_W, height: NODE_H });
 
   const children = grouped
     ? board.waves.filter((w) => w.phases.length).map((w, wi) => ({

@@ -328,15 +328,16 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     }).join("");
     const legend = STATUS.filter((s) => all.some((p) => p.status === s)).map((s) => `<span>${pill(s)}</span>`).join("");
     return `<section class="panel" aria-label="Dependency graph"><h2>Dependency graph</h2>
-      <div class="gview" id="tb-gview"><svg viewBox="0 0 ${L.width} ${L.height}" role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
+      <div class="gview" id="tb-gview"><svg role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
       <defs><marker id="tb-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
-      ${groups}${edges}${nodes}</svg>
+      <g class="gcam" transform="scale(${MIN_READ})">${groups}${edges}${nodes}</g></svg>
       <div class="gctl"><button class="btn" data-gz="out" aria-label="Zoom out">−</button><button class="btn" data-gz="in" aria-label="Zoom in">+</button><button class="btn" data-gz="fit" aria-label="Fit whole graph">Fit</button><button class="btn" data-gz="reset" aria-label="Reset view">Reset</button></div></div>
       <div class="ghint">Drag to pan · ${/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl"}+scroll or pinch to zoom · click a phase to open it</div>
       <div class="legend">${legend}</div></section>`;
   }
 
-  // Pan/zoom over the graph by rewriting the viewBox. k is screen px per graph
+  // Pan/zoom over the graph with a transform in screen pixels (no viewBox, so a
+  // mis-measured box can never rescale the drawing). k is screen px per graph
   // unit. The box starts at the smallest scale that keeps 11px labels legible
   // (or fits the whole graph if that is larger), and grows tall enough to show
   // the graph at that scale, up to most of the window.
@@ -345,7 +346,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   function initGraph() {
     const box = document.getElementById("tb-gview");
     if (!box || !gl) return;
-    const svg = box.querySelector("svg");
+    const cam = box.querySelector(".gcam");
     const sig = `${gl.width}x${gl.height}`;
     const minK = () => Math.min(MIN_READ, box.clientWidth / gl.width, 1);
     const baseK = () => Math.min(1, Math.max(MIN_READ, box.clientWidth / gl.width));
@@ -355,10 +356,10 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     };
     const apply = () => {
       const w = box.clientWidth / gv.k, h = box.clientHeight / gv.k;
-      // keep at least a quarter of the view on the graph
-      gv.x = Math.min(Math.max(gv.x, -w * 0.75), gl.width - w * 0.25);
-      gv.y = Math.min(Math.max(gv.y, -h * 0.75), gl.height - h * 0.25);
-      svg.setAttribute("viewBox", `${gv.x} ${gv.y} ${w} ${h}`);
+      // keep at least a quarter of the view on the graph (once the box has a size)
+      if (w && h) gv.x = Math.min(Math.max(gv.x, -w * 0.75), gl.width - w * 0.25);
+      if (w && h) gv.y = Math.min(Math.max(gv.y, -h * 0.75), gl.height - h * 0.25);
+      cam.setAttribute("transform", `scale(${gv.k}) translate(${-gv.x},${-gv.y})`);
     };
     const reset = () => { gv = { k: baseK(), x: 0, y: 0, touched: false, sig }; apply(); };
     const fit = () => {
@@ -373,6 +374,9 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     };
     size();
     if (!gv || gv.sig !== sig || !gv.touched) reset(); else apply();
+    // The frame may not have its final width yet on first paint; settle again.
+    requestAnimationFrame(() => { if (!gv.touched && document.body.contains(box)) { size(); reset(); } });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (!gv.touched && document.body.contains(box)) { size(); reset(); } });
 
     box.querySelector(".gctl").addEventListener("click", (e) => {
       const z = e.target.closest("[data-gz]")?.dataset.gz; if (!z) return;

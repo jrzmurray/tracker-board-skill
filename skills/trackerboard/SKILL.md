@@ -26,7 +26,7 @@ trackerboard dep add F7 --on F1,F2 | dep rm F7 --on F2 | dep set F7 --on F1 | de
 trackerboard log "JR ruled the EXCLUDED sites"
 ```
 
-- Phase fields: `--title --lane --owner --status --note --req --pr --review --notes --deps`. `--owner` is who is working the phase (your agent id, or a person); set it when you start a phase and clear it with `--owner ""` when you hand it off. `--note` is the one-line status detail shown under the status pill; `--req`, `--review` and `--notes` are the expandable detail. Text supports `` `code` ``, `**bold**`, `[text](url)`, `- ` lists and bare `#1234` (linked to the board's `--repo-url`).
+- Phase fields: `--title --lane --owner --status --note --req --pr --review --notes --deps`. `--owner` is who is working the phase (your agent id, or a person); set it when you start a phase and clear it with `--owner ""` when you hand it off. The page shows each owner as a colored glyph (shape and color derived from the id; the id is in its tooltip). `--note` is the one-line status detail shown under the status pill; `--req`, `--review` and `--notes` are the expandable detail. Text supports `` `code` ``, `**bold**`, `[text](url)`, `- ` lists and bare `#1234` (linked to the board's `--repo-url`).
 - Status: `todo active review waiting blocked done ongoing external dropped` (aliases such as `merged`, `in-progress`, `not-started`, `n/a` are accepted).
 - Long values: `--req @file.md` reads a file; `--notes -` reads stdin.
 - `--wave` is optional. A new phase goes to the wave of its parent id (`P0.1` → `P0`'s wave), else the wave whose `--prefix` matches, else the wave holding the same id stem, else the only wave.

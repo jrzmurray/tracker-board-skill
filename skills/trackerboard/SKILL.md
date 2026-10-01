@@ -75,4 +75,10 @@ Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing
 
 ## Reading
 
-`trackerboard show` prints a compact board (status, title, deps per phase, plus phases whose dependencies are all done). `show --phase X` prints one phase in full, `show --json` the raw data. `dep list X`, `dep ready` and `dep graph` (mermaid) cover the graph. Prefer these over opening the artifact.
+`trackerboard show` prints a compact board grouped by wave and lane (`lane A  4/10 done`), one line per phase: id, status, title, deps, `@owner`. It ends with the phases whose dependencies are all done. `show --phase X` prints one phase in full, including its lane, and `show --json` prints the raw data.
+
+Narrow any of these with `--wave W`, `--lane L`, `--status S[,S]` and `--owner O`. Matching ignores case; `--lane ""` and `--owner ""` match phases with none. Two terse views print only rows:
+- `--ids`: one phase id per line.
+- `--pr-list`: id, status and PR for each phase that has one.
+
+For example, `show --lane B --status blocked --ids` or `show --lane A --pr-list`. `dep list X`, `dep ready` and `dep graph` (mermaid) cover the graph. Prefer these over opening the artifact.

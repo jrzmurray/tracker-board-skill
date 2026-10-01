@@ -192,3 +192,25 @@ test("writes to a linked board need a recent refresh", () => {
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
   run(["insert", "--phase", "P1"]);
 });
+
+test("show filters by lane, status and owner, and lists ids or PRs", () => {
+  const { run } = sandbox();
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1", "--lane", "A", "--status", "done", "--pr", "#11"]);
+  run(["insert", "--phase", "P2", "--lane", "A", "--pr", "—"]);
+  run(["insert", "--phase", "P3", "--lane", "B", "--status", "blocked", "--owner", "x", "--pr", "#13"]);
+  run(["insert", "--phase", "P4"]);
+  const all = run(["show"]).stdout;
+  assert.match(all, /lane A  1\/2 done\n    P1 /);
+  assert.match(all, /lane B  0\/1 done\n    P3 /);
+  assert.match(all, /no lane  0\/1 done\n    P4 /);
+  assert.equal(run(["show", "--lane", "a", "--ids"]).stdout, "P1\nP2\n");
+  assert.equal(run(["show", "--lane", "", "--ids"]).stdout, "P4\n");
+  assert.equal(run(["show", "--status", "todo,blocked", "--ids"]).stdout, "P2\nP3\nP4\n");
+  assert.equal(run(["show", "--owner", "x", "--ids"]).stdout, "P3\n");
+  assert.match(run(["show", "--pr-list"]).stdout, /^P1  done +#11\nP3  blocked +#13\n$/);
+  const lane = run(["show", "--lane", "B"]).stdout;
+  assert.doesNotMatch(lane, /P1|P4/);
+  assert.deepEqual(JSON.parse(run(["show", "--lane", "B", "--json"]).stdout).map((p) => [p.id, p.wave]), [["P3", "main"]]);
+  assert.match(run(["show", "--lane", "Z"], { ok: false }).stderr, /no lane "Z"; lanes: A, B, ""/);
+});

@@ -22,7 +22,10 @@ Boards
   remove <name> --force           Delete a board and its local state.
 
 Read
-  show [--wave W] [--phase P] [--json]   Compact board summary (or one wave/phase).
+  show [--phase P] [--json]              Compact board summary, grouped by wave and lane (or one phase).
+  show [--wave W] [--lane L] [--status S,S] [--owner O] [--ids | --pr-list | --json]
+                         Filter the phases (--lane "" / --owner "" = none).
+                         --ids: ids only. --pr-list: id, status and PR of phases with one.
   dep list [P] | dep graph | dep ready   Dependencies, mermaid graph, unblocked phases.
 
 Write (--board is optional when exactly one board resolves from the cwd)
@@ -59,7 +62,7 @@ Publish
 
 // ---------- args ----------
 
-const BOOL = new Set(["theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
+const BOOL = new Set(["ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -147,10 +150,10 @@ function requireFresh(name) {
   throw new B.BoardError(`${name} was last checked against its artifact ${age(checkedAgo(local))}; other agents may have written it. Refresh, then repeat this command:\n${refreshLines(name, local).join("\n")}`);
 }
 
-function staleNote(name) {
+function staleNote(name, toStderr = false) {
   const local = S.loadLocal(name);
   if (linked(local) && checkedAgo(local) > FRESH_SECONDS) {
-    out(`\nnote: last checked against the artifact ${age(checkedAgo(local))}; \`trackerboard refresh\` first if others may have written it`);
+    (toStderr ? (s) => process.stderr.write(s.trimStart() + "\n") : out)(`\nnote: last checked against the artifact ${age(checkedAgo(local))}; \`trackerboard refresh\` first if others may have written it`);
   }
 }
 
@@ -190,30 +193,88 @@ function showPhase(wave, p) {
   }
 }
 
-function showBoard(board, name, opts) {
-  if (opts.json) {
-    const v = opts.phase ? B.locatePhase(board, opts.phase, opts.wave).phase : opts.wave ? B.requireWave(board, opts.wave) : board;
-    out(JSON.stringify(v, null, 2));
-    return;
+// Phase filters shared by the show views: --wave, --lane, --status, --owner.
+// --lane "" and --owner "" select phases with none.
+function selectPhases(board, opts) {
+  const lc = (v) => String(v).toLowerCase();
+  let rows = B.allPhases(board);
+  if (opts.wave != null) {
+    const w = B.requireWave(board, opts.wave);
+    rows = rows.filter((r) => r.wave === w);
   }
+  if (opts.lane != null) {
+    const lanes = [...new Set(B.allPhases(board).map((r) => r.phase.lane || ""))];
+    if (!lanes.some((l) => lc(l) === lc(opts.lane))) {
+      throw new B.BoardError(`no lane "${opts.lane}"; lanes: ${lanes.map((l) => l || '""').join(", ")}`);
+    }
+    rows = rows.filter((r) => lc(r.phase.lane || "") === lc(opts.lane));
+  }
+  if (opts.status != null) {
+    const want = new Set(B.parseList(opts.status).map(B.normalizeStatus));
+    rows = rows.filter((r) => want.has(r.phase.status));
+  }
+  if (opts.owner != null) rows = rows.filter((r) => lc(r.phase.owner || "") === lc(opts.owner));
+  return rows;
+}
+
+function showBoard(board, name, opts) {
   if (opts.phase) {
     const { wave, phase } = B.locatePhase(board, opts.phase, opts.wave);
+    if (opts.json) return out(JSON.stringify(phase, null, 2));
     showPhase(wave, phase);
     for (const d of B.dependents(board, phase.id)) out(`  needed by: ${d}`);
     staleNote(name);
     return;
   }
+  const filtered = ["lane", "status", "owner"].some((k) => opts[k] != null);
+  const rows = selectPhases(board, opts);
+  if (opts.json) {
+    const v = filtered ? rows.map((r) => ({ wave: r.wave.id, ...r.phase })) : opts.wave ? B.requireWave(board, opts.wave) : board;
+    out(JSON.stringify(v, null, 2));
+    return;
+  }
+  // Terse views write only their rows to stdout; the staleness note goes to stderr.
+  if (opts.ids) {
+    for (const r of rows) out(r.phase.id);
+    return staleNote(name, true);
+  }
+  if (opts["pr-list"]) {
+    const withPr = rows.filter((r) => /[\p{L}\p{N}]/u.test(r.phase.pr || "")); // skip "—" placeholders
+    const w = Math.max(0, ...withPr.map((r) => r.phase.id.length));
+    for (const { phase: p } of withPr) out(`${p.id.padEnd(w)}  ${p.status.padEnd(8)} ${short(p.pr, 90)}`);
+    if (!withPr.length) out("(no PRs)");
+    return staleNote(name, true);
+  }
+
   const local = S.loadLocal(name);
-  const waves = opts.wave ? [B.requireWave(board, opts.wave)] : board.waves;
   out(`${board.name}: ${board.title}`);
   out(`artifact: ${local.artifactUrl || "(none)"}  db version: ${local.dbVersion ?? "(unknown)"}`);
-  for (const w of waves) {
+  const line = (p) => `${p.id.padEnd(10)} ${p.status.padEnd(8)} ${short(p.title, 34).padEnd(34)} ${p.deps.length ? "← " + p.deps.join(",") : ""}${p.owner ? `  @${p.owner}` : ""}`.trimEnd();
+  for (const w of board.waves) {
+    const mine = rows.filter((r) => r.wave === w).map((r) => r.phase);
+    if (!mine.length && (filtered || opts.wave != null)) continue;
     out(`\nwave ${w.id}${w.title ? ` — ${w.title}` : ""}${w.prefix ? `  (prefix ${w.prefix})` : ""}`);
-    for (const p of w.phases) {
-      out(`  ${p.id.padEnd(10)} ${p.status.padEnd(8)} ${short(p.title, 34).padEnd(34)} ${p.deps.length ? "← " + p.deps.join(",") : ""}${p.owner ? `  @${p.owner}` : ""}`.trimEnd());
+    // Group by lane, in order of first use, with the lane's done count (the
+    // whole lane, not just the filtered rows), as the page does.
+    const lanes = new Map();
+    for (const p of mine) {
+      const l = p.lane || "";
+      if (!lanes.has(l)) lanes.set(l, []);
+      lanes.get(l).push(p);
+    }
+    const laned = w.phases.some((p) => p.lane);
+    for (const [l, ps] of lanes) {
+      const indent = laned ? "    " : "  ";
+      if (laned) {
+        const all = w.phases.filter((p) => (p.lane || "") === l);
+        out(`  ${l ? `lane ${l}` : "no lane"}  ${all.filter((p) => p.status === "done").length}/${all.length} done`);
+      }
+      for (const p of ps) out(indent + line(p));
     }
   }
-  const ready = B.readyPhases(board);
+  if (filtered && !rows.length) out("\n(no matching phases)");
+  const shown = new Set(rows.map((r) => r.phase.id));
+  const ready = B.readyPhases(board).filter((id) => shown.has(id));
   if (ready.length) out(`\nready: ${ready.join(", ")}`);
   staleNote(name);
 }

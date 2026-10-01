@@ -22,6 +22,7 @@ Run the CLI as `trackerboard` if it is on PATH. Otherwise run `node <skill dir>/
 
 ```
 trackerboard show [--phase P] [--json]
+trackerboard show [--wave W] [--lane L] [--status S,S] [--owner O] [--ids | --pr-list | --json]
 trackerboard insert --phase P0.1 [--wave W] --title "…" [--lane L] [--status todo] [--deps P0]
 trackerboard update --phase P0.1 --status review --pr "#2933" --note "round 1" --log "P0.1 in review"
 trackerboard update --phase P0.1 --rename P0.2 | --to-wave B
@@ -37,6 +38,7 @@ trackerboard log "decision: …"
 - A phase's position comes from its id. `P0.1` or `P0-1` goes right after `P0`, even if `P1` exists. Insert never overwrites: it fails if the id already exists.
 - `--wave` is optional. A new phase goes to the wave of its parent id, then to a wave whose prefix matches, then to the only wave.
 - Deleting a phase removes it from every other phase's deps.
+- `show` groups phases by wave and lane. The filters narrow it to one lane, status or owner (`""` means none). `--ids` prints only ids, and `--pr-list` prints id, status and PR for phases that have one.
 - `trackerboard help` prints the full usage.
 
 ## Publishing

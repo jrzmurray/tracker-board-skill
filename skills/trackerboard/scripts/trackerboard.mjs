@@ -404,6 +404,7 @@ const commands = {
     const name = boardName(opts);
     if (!opts.from) throw new B.BoardError("pull needs --from <file>");
     const board = JSON.parse(fs.readFileSync(opts.from, "utf8"));
+    delete board.layout; // derived; recomputed on every push
     if (board.name !== name) throw new B.BoardError(`document is board "${board.name}", not "${name}"`);
     S.saveBoard(board);
     if (opts.version) {
@@ -417,6 +418,7 @@ const commands = {
   import({ pos, opts }) {
     if (!opts.from) throw new B.BoardError("import needs --from <board json>");
     const board = JSON.parse(fs.readFileSync(opts.from, "utf8"));
+    delete board.layout;
     const name = S.checkName(pos[0] || board.name);
     if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; use pull to replace it`);
     board.name = name;

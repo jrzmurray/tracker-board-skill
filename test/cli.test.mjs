@@ -128,3 +128,13 @@ test("import creates a board from JSON and refuses to overwrite", () => {
   assert.match(run(["show"]).stdout, /P2 +todo +← P1/);
   assert.match(run(["import", "copy", "--from", file], { ok: false }).stderr, /already exists/);
 });
+
+test("owner is a phase field: set, shown, cleared", () => {
+  const { run } = sandbox();
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1", "--title", "first", "--owner", "builder-3"]);
+  assert.match(run(["show"]).stdout, /P1 +todo +first +@builder-3/);
+  assert.match(run(["show", "--phase", "P1"]).stdout, /owner builder-3/);
+  run(["update", "--phase", "P1", "--owner", ""]);
+  assert.doesNotMatch(run(["show"]).stdout, /@builder-3/);
+});

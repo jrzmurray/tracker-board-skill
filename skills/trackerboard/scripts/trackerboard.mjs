@@ -34,7 +34,8 @@ Write (--board is optional when exactly one board resolves from the cwd)
   log "<text>"                            Append to the board's change log.
 
 Phase fields
-  --title --lane --status --note --req --pr --review --notes --deps A,B
+  --title --lane --owner --status --note --req --pr --review --notes --deps A,B
+  --owner: who is working the phase (agent id or person); "" clears it.
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
@@ -142,7 +143,7 @@ const short = (s, n = 70) => {
 };
 
 function showPhase(wave, p) {
-  out(`${p.id}  [${p.status}]  wave ${wave.id}${p.lane ? `  lane ${p.lane}` : ""}`);
+  out(`${p.id}  [${p.status}]  wave ${wave.id}${p.lane ? `  lane ${p.lane}` : ""}${p.owner ? `  owner ${p.owner}` : ""}`);
   for (const f of ["title", "note", "deps", "pr", "review", "req", "notes"]) {
     const v = f === "deps" ? p.deps.join(", ") : p[f];
     if (v) out(`  ${f}: ${v}`);
@@ -168,7 +169,7 @@ function showBoard(board, name, opts) {
   for (const w of waves) {
     out(`\nwave ${w.id}${w.title ? ` — ${w.title}` : ""}${w.prefix ? `  (prefix ${w.prefix})` : ""}`);
     for (const p of w.phases) {
-      out(`  ${p.id.padEnd(10)} ${p.status.padEnd(8)} ${short(p.title, 34).padEnd(34)} ${p.deps.length ? "← " + p.deps.join(",") : ""}`);
+      out(`  ${p.id.padEnd(10)} ${p.status.padEnd(8)} ${short(p.title, 34).padEnd(34)} ${p.deps.length ? "← " + p.deps.join(",") : ""}${p.owner ? `  @${p.owner}` : ""}`.trimEnd());
     }
   }
   const ready = B.readyPhases(board);

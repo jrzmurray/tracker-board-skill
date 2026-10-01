@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jrzmurray/tracker-board-skill/blob/main/skills/trackerboard/board.schema.json",
+  "title": "trackerboard board",
+  "description": "Input to `trackerboard import --from FILE [--replace]`. Only `waves`, wave `id` and phase `id` are required; every other field defaults to empty (status to todo). Unknown fields are rejected.",
+  "type": "object",
+  "required": ["waves"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": 1, "description": "Format version. Defaults to 1." },
+    "name": { "type": "string", "description": "Board name (letters, digits, . _ -). The import command's name argument overrides it." },
+    "title": { "type": "string", "description": "Page heading. Defaults to the name." },
+    "subtitle": { "type": "string" },
+    "lede": { "type": "string", "description": "Intro paragraph under the heading." },
+    "notes": { "type": "string" },
+    "repoUrl": { "type": "string", "description": "https://github.com/OWNER/NAME. Bare #N references in PR and issue fields link here, and `trackerboard github` reads this repo." },
+    "waves": {
+      "type": "array",
+      "description": "Ordered stages. A board with one untitled wave shows no wave header.",
+      "items": { "$ref": "#/$defs/wave" }
+    },
+    "log": {
+      "type": "array",
+      "description": "Change log, newest first. On --replace these entries are merged with the board's own log.",
+      "items": {
+        "type": "object",
+        "required": ["text"],
+        "properties": { "at": { "type": "string", "format": "date-time" }, "text": { "type": "string" } }
+      }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "layout": { "description": "Computed graph layout; ignored on import." }
+  },
+  "$defs": {
+    "wave": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "prefix": { "type": "string", "description": "Id prefix that routes new phases to this wave." },
+        "notes": { "type": "string" },
+        "phases": { "type": "array", "items": { "$ref": "#/$defs/phase" }, "description": "Shown in this order." }
+      }
+    },
+    "phase": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique across the board (case-insensitive)." },
+        "title": { "type": "string" },
+        "lane": { "type": "string", "description": "Grouping within a wave." },
+        "owner": { "type": "string", "description": "Who is working it." },
+        "status": {
+          "type": "string",
+          "description": "todo | active | review | waiting | blocked | done | ongoing | external | dropped. Aliases such as planned, in_progress, merged and shipped are accepted.",
+          "default": "todo"
+        },
+        "note": { "type": "string", "description": "One line shown under the status." },
+        "req": { "type": "string", "description": "Requirements detail (expandable)." },
+        "issue": { "type": "string", "description": "GitHub issue, e.g. #1234." },
+        "pr": { "type": "string", "description": "Pull request(s), e.g. #2933, #2940." },
+        "review": { "type": "string", "description": "Review detail (expandable)." },
+        "notes": { "type": "string", "description": "Further detail (expandable)." },
+        "deps": {
+          "description": "Ids of phases this one needs. A list, or a comma-separated string.",
+          "oneOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "string" }]
+        }
+      }
+    }
+  }
+}

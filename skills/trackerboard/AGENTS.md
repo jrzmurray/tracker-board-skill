@@ -31,6 +31,8 @@ trackerboard dep add P2 --on P1,P0 | dep rm P2 --on P0 | dep set P2 --on P1 | de
 trackerboard dep ready | dep list P2 | dep graph
 trackerboard insert --wave B --title "Wave B" --prefix B-
 trackerboard log "decision: …"
+trackerboard import --from board.json --replace [--keep owner]
+trackerboard github [--dry-run]
 ```
 
 - Phase fields: `--title --lane --owner --status --note --req --issue --pr --review --notes --deps`. `--issue` is the GitHub issue the phase works (`#1234`). `--req`, `--review` and `--notes` are the expandable details. A value of `@file.md` reads the field from a file, and `-` reads it from stdin.
@@ -39,6 +41,7 @@ trackerboard log "decision: …"
 - `--wave` is optional. A new phase goes to the wave of its parent id, then to a wave whose prefix matches, then to the only wave.
 - Deleting a phase removes it from every other phase's deps.
 - `show` groups phases by wave and lane. The filters narrow it to one lane, status or owner (`""` means none). `--ids` prints only ids, and `--pr-list` prints id, status and PR for phases that have one.
+- A board may be generated from another source by a project script (`import --from FILE --replace`). Fields the generator writes are overwritten on the next import, so change those at the source; `owner` and others the import keeps (`--keep`) are yours to edit. `trackerboard github` adds open PRs and issues that mention phase ids.
 - `trackerboard help` prints the full usage.
 
 ## Publishing

@@ -216,3 +216,47 @@ test("show filters by lane, status and owner, and lists ids or PRs", () => {
   assert.deepEqual(JSON.parse(run(["show", "--lane", "B", "--json"]).stdout).map((p) => [p.id, p.wave]), [["P3", "main"]]);
   assert.match(run(["show", "--lane", "Z"], { ok: false }).stderr, /no lane "Z"; lanes: A, B, ""/);
 });
+
+test("import --replace updates a board from regenerated JSON and logs the changes", () => {
+  const { dir, run } = sandbox();
+  const file = path.join(dir, "gen.json");
+  const gen = (phases) => fs.writeFileSync(file, JSON.stringify({ title: "Gen", waves: [{ id: "G1", title: "Leg one", phases }] }));
+  gen([{ id: "R-1", status: "planned" }, { id: "R-2", deps: ["R-1"] }]);
+  run(["import", "gen", "--from", file]);
+  run(["update", "--phase", "R-1", "--owner", "agent-7"]);
+  gen([{ id: "R-1", status: "done", owner: "" }, { id: "R-3", status: "in_progress" }]);
+  const r = run(["import", "--from", file, "--replace", "--keep", "owner"]);
+  assert.match(r.stdout, /replaced gen .*\(1 changed, 1 added, 1 removed\)/);
+  const show = run(["show"]).stdout;
+  assert.match(show, /R-1 +done .*@agent-7/);
+  assert.match(show, /R-3 +active/);
+  assert.doesNotMatch(show, /R-2 /);
+  assert.match(JSON.parse(run(["show", "--json"]).stdout).log[0].text, /import: 1 status change\(s\): R-1 todo → done; 1 added: R-3; 1 removed: R-2/);
+  assert.match(run(["import", "--from", file, "--replace", "--keep", "owner"]).stdout, /already matches/);
+  assert.match(run(["import", "gen", "--from", file], { ok: false }).stderr, /already exists; pass --replace/);
+  assert.match(run(["import", "--from", file], { ok: false }).stderr, /import needs a board name/);
+  fs.writeFileSync(file, JSON.stringify({ waves: [{ id: "G1", phases: [{ id: "R-1", leg: "x" }] }] }));
+  assert.match(run(["import", "--from", file, "--replace"], { ok: false }).stderr, /phase R-1: unknown field\(s\) leg/);
+});
+
+test("github overlays open PRs and issues from gh", () => {
+  const { dir, run } = sandbox();
+  const gh = path.join(dir, "gh");
+  fs.writeFileSync(gh, `#!/bin/sh
+echo "$@" >> "${dir}/gh.log"
+case "$1" in
+  pr) echo '[{"number":41,"title":"feat: x (R-1)","headRefName":"b","labels":[],"isDraft":false,"closingIssuesReferences":[{"number":40}]}]' ;;
+  issue) echo '[{"number":40,"title":"R-1 tracking","labels":[]}]' ;;
+esac
+`, { mode: 0o755 });
+  const env = { env: { TRACKERBOARD_GH: gh } };
+  run(["create", "b", "--repo-url", "https://github.com/acme/widgets"]);
+  run(["insert", "--phase", "R-1"]);
+  run(["insert", "--phase", "R-2"]);
+  assert.match(run(["github", "--dry-run"], env).stdout, /R-1: todo → review, pr #41, issue #40\ndry run/);
+  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[todo\]/);
+  assert.match(run(["github"], env).stdout, /1 phase\(s\) updated from 1 open PRs and 1 open issues in acme\/widgets/);
+  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[review\][\s\S]*issue: #40[\s\S]*pr: #41/);
+  assert.match(fs.readFileSync(path.join(dir, "gh.log"), "utf8"), /pr list --json .*closingIssuesReferences --repo acme\/widgets --state open/);
+  assert.match(run(["github"], env).stdout, /no changes/);
+});

@@ -2,11 +2,13 @@
 // trackerboard: deterministic CRUD for phase/wave tracker boards that publish
 // to a claude.ai artifact. Run `trackerboard help` for usage.
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
+import * as G from "./lib/github.mjs";
 import { content, mergeBoards, sameContent } from "./lib/merge.mjs";
 import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage, renderStandalone } from "./lib/render.mjs";
 
@@ -57,13 +59,22 @@ Publish
                           (no-op when N is the recorded version).
   Writes to a linked board need a refresh within ${FRESH_SECONDS_HELP}s
   (TRACKERBOARD_FRESH_SECONDS); otherwise they print the refresh steps and stop.
-  import [name] --from FILE [--branch] [--no-bind]   Create a board from board JSON.
   render [--out FILE]     Write a static HTML snapshot (for local preview).
+
+Generated boards (the input format is board.schema.json)
+  import [name] --from FILE [--branch] [--no-bind]   Create a board from board JSON.
+  import [name] --from FILE --replace [--keep owner,note]
+                          Update an existing board from regenerated JSON; logs status
+                          changes, adds and removals. --keep: phase fields the board keeps.
+  github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run]
+                          Find phase ids in open PRs and issues: fill --pr and --issue,
+                          and move todo/waiting -> active (draft PR) or review (ready PR).
+                          Never moves a phase back. --repo defaults to the board's repo URL.
 `;
 
 // ---------- args ----------
 
-const BOOL = new Set(["ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
+const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -584,18 +595,94 @@ const commands = {
     }
   },
 
-  import({ pos, opts }) {
+  async import({ pos, opts }) {
     if (!opts.from) throw new B.BoardError("import needs --from <board json>");
-    const board = JSON.parse(fs.readFileSync(opts.from, "utf8"));
-    delete board.layout;
-    const name = S.checkName(pos[0] || board.name);
-    if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; use pull to replace it`);
-    board.name = name;
-    B.validate(board);
-    S.createBoard(name, { title: board.title });
-    S.saveBoard(board);
-    out(`ok: imported ${name} (${B.allPhases(board).length} phases)`);
-    if (!opts["no-bind"]) commands.bind({ opts: { board: name, branch: opts.branch } });
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(opts.from, "utf8"));
+    } catch (e) {
+      throw new B.BoardError(`cannot read ${opts.from}: ${e.message}`);
+    }
+    const incoming = B.normalizeBoard(raw);
+    // --replace with no name updates the file's board, or the one this directory resolves to.
+    const name = pos[0] || opts.board || incoming.name || (opts.replace ? boardName(opts) : "");
+    if (!name) throw new B.BoardError("import needs a board name: an argument, --board, or \"name\" in the file");
+    S.checkName(name);
+    incoming.name = name;
+    if (!opts.replace) {
+      if (opts.keep) throw new B.BoardError("--keep only applies with --replace");
+      if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; pass --replace to update it from this file`);
+      S.createBoard(name, { title: incoming.title });
+      S.saveBoard(incoming);
+      out(`ok: imported ${name} (${B.allPhases(incoming).length} phases)`);
+      if (!opts["no-bind"]) commands.bind({ opts: { board: name, branch: opts.branch } });
+      return;
+    }
+    if (opts["no-bind"] || opts.branch) throw new B.BoardError("--replace keeps the board's bindings; drop --no-bind / --branch");
+    const current = B.normalizeBoard(S.loadBoard(name));
+    const keep = B.parseList(opts.keep || "");
+    for (const f of keep) {
+      if (!B.PHASE_FIELDS.includes(f)) throw new B.BoardError(`--keep: unknown phase field "${f}"; fields: ${B.PHASE_FIELDS.join(", ")}`);
+    }
+    const before = new Map(B.allPhases(current).map(({ phase }) => [phase.id.toLowerCase(), phase]));
+    const after = new Map(B.allPhases(incoming).map(({ phase }) => [phase.id.toLowerCase(), phase]));
+    // --keep: fields this board owns rather than the generator (an agent's owner, say).
+    for (const [id, p] of after) {
+      const was = before.get(id);
+      if (was) for (const f of keep) p[f] = f === "deps" ? [...was.deps] : was[f];
+    }
+    if (keep.includes("deps")) B.validate(incoming);
+    // The log is the board's history, so keep it and add any entries the file brings.
+    const seen = new Set();
+    incoming.log = [...incoming.log, ...current.log]
+      .filter((e) => { const k = `${e.at}\0${e.text}`; return !seen.has(k) && seen.add(k); })
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+      .slice(0, B.LOG_LIMIT);
+    if (sameContent(incoming, current) && !opts.log) {
+      out(`ok: ${name} already matches ${opts.from}`);
+      return;
+    }
+    const added = [...after.keys()].filter((id) => !before.has(id)).map((id) => after.get(id).id);
+    const removed = [...before.keys()].filter((id) => !after.has(id)).map((id) => before.get(id).id);
+    const moved = [...after].filter(([id, p]) => before.has(id) && before.get(id).status !== p.status)
+      .map(([id, p]) => `${p.id} ${before.get(id).status} → ${p.status}`);
+    const changed = [...after].filter(([id, p]) => before.has(id) && !sameContent(before.get(id), p)).length;
+    const list = (xs) => xs.slice(0, 8).join(", ") + (xs.length > 8 ? `, +${xs.length - 8} more` : "");
+    const parts = [
+      moved.length && `${moved.length} status change(s): ${list(moved)}`,
+      added.length && `${added.length} added: ${list(added)}`,
+      removed.length && `${removed.length} removed: ${list(removed)}`,
+    ].filter(Boolean);
+    if (!opts.log && parts.length) B.appendLog(incoming, `import: ${parts.join("; ")}`);
+    await commit(incoming, opts, `replaced ${name} from ${opts.from} (${changed} changed, ${added.length} added, ${removed.length} removed)`);
+  },
+
+  async github({ opts }) {
+    const name = boardName(opts);
+    const board = S.loadBoard(name);
+    const sources = opts.in ? B.parseList(opts.in) : G.DEFAULT_SOURCES;
+    for (const s of sources) if (!G.SOURCES.includes(s)) throw new B.BoardError(`--in: unknown source "${s}"; sources: ${G.SOURCES.join(", ")}`);
+    const repo = opts.repo || (board.repoUrl.match(/github\.com[/:]([^/]+\/[^/#?]+?)(?:\.git)?\/?$/) || [])[1] || null;
+    const limit = String(opts.limit || 1000);
+    const gh = (args) => {
+      const r = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...(repo ? ["--repo", repo] : []), "--state", "open", "--limit", limit], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+      if (r.error) throw new B.BoardError(`cannot run gh (${r.error.code === "ENOENT" ? "not installed" : r.error.message}); install the GitHub CLI and run \`gh auth login\``);
+      if (r.status !== 0) throw new B.BoardError(`gh ${args.slice(0, 2).join(" ")} failed: ${r.stderr.trim()}`);
+      return JSON.parse(r.stdout || "[]");
+    };
+    const fields = ["number", "title", "labels", ...(sources.includes("body") ? ["body"] : [])];
+    const prs = gh(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "closingIssuesReferences"].join(",")]);
+    const issues = gh(["issue", "list", "--json", fields.join(",")]);
+    const changes = G.applyGithub(board, { prs, issues }, { sources });
+    const scanned = `${prs.length} open PRs and ${issues.length} open issues${repo ? ` in ${repo}` : ""}`;
+    if (!changes.length) return out(`ok: no changes from ${scanned}`);
+    for (const c of changes) out(`  ${G.describeChange(c)}`);
+    if (opts["dry-run"]) return out(`dry run: ${changes.length} phase(s) would change from ${scanned}`);
+    if (!opts.log) {
+      const moved = changes.filter((c) => c.status).map((c) => `${c.id} ${c.status[1]}`);
+      B.appendLog(board, `github: ${changes.length} phase(s) updated from open PRs/issues${moved.length ? ` (${moved.slice(0, 8).join(", ")}${moved.length > 8 ? ", …" : ""})` : ""}`);
+    }
+    await commit(board, opts, `${changes.length} phase(s) updated from ${scanned}`);
   },
 
   async render({ opts }) {

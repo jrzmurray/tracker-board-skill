@@ -372,6 +372,63 @@ export function appendLog(board, text, at = new Date().toISOString()) {
   board.log.length = Math.min(board.log.length, LOG_LIMIT);
 }
 
+// ---------- input contract ----------
+
+// Accepts board JSON written by a generator (see board.schema.json) and
+// returns a complete board: missing fields get their defaults, status aliases
+// are normalized, and deps may be a list or a comma string. Unknown keys are
+// rejected so a typo in a generator fails loudly instead of being dropped.
+export function normalizeBoard(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new BoardError("board JSON must be an object");
+  const where = (s) => (msg) => new BoardError(`${s}: ${msg}`);
+  const strict = (obj, allowed, err) => {
+    const extra = Object.keys(obj).filter((k) => !allowed.includes(k));
+    if (extra.length) throw err(`unknown field(s) ${extra.join(", ")}; allowed: ${allowed.join(", ")}`);
+  };
+  const str = (v, err, f) => {
+    if (v == null) return "";
+    if (typeof v === "object") throw err(`${f} must be a string`);
+    return String(v);
+  };
+  const boardErr = where("board");
+  strict(input, ["schema", "name", ...BOARD_FIELDS, "waves", "log", "updatedAt", "layout"], boardErr);
+  const schema = input.schema ?? SCHEMA;
+  if (schema !== SCHEMA) throw boardErr(`unsupported schema ${schema} (this trackerboard reads ${SCHEMA})`);
+  if (!Array.isArray(input.waves)) throw boardErr("waves must be a list");
+  const board = { schema, name: str(input.name, boardErr, "name") };
+  for (const f of BOARD_FIELDS) board[f] = str(input[f], boardErr, f);
+  board.title ||= board.name;
+  board.waves = input.waves.map((w, i) => {
+    const err = where(`wave ${w?.id ?? `#${i + 1}`}`);
+    if (!w || typeof w !== "object" || w.id == null || String(w.id).trim() === "") throw err("needs an id");
+    strict(w, ["id", ...WAVE_FIELDS, "phases"], err);
+    const wave = { id: String(w.id) };
+    for (const f of WAVE_FIELDS) wave[f] = str(w[f], err, f);
+    if (w.phases != null && !Array.isArray(w.phases)) throw err("phases must be a list");
+    wave.phases = (w.phases || []).map((p, j) => {
+      const perr = where(`phase ${p?.id ?? `#${j + 1} in wave ${wave.id}`}`);
+      if (!p || typeof p !== "object" || p.id == null || String(p.id).trim() === "") throw perr("needs an id");
+      strict(p, ["id", ...PHASE_FIELDS], perr);
+      const phase = { id: String(p.id) };
+      for (const f of PHASE_FIELDS) if (f !== "deps") phase[f] = str(p[f], perr, f);
+      try {
+        phase.status = normalizeStatus(phase.status || "todo");
+      } catch (e) {
+        throw perr(e.message);
+      }
+      phase.deps = Array.isArray(p.deps) ? p.deps.map(String) : parseList(p.deps ?? "");
+      return phase;
+    });
+    return wave;
+  });
+  board.log = Array.isArray(input.log)
+    ? input.log.filter((e) => e && e.text).map((e) => ({ at: String(e.at || new Date().toISOString()), text: String(e.text) })).slice(0, LOG_LIMIT)
+    : [];
+  board.updatedAt = input.updatedAt ? String(input.updatedAt) : new Date().toISOString();
+  validate(board);
+  return board;
+}
+
 export function validate(board) {
   if (board.schema !== SCHEMA) throw new BoardError(`unsupported board schema ${board.schema}`);
   const ids = new Set();

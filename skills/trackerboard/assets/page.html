@@ -518,6 +518,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 
   function render() {
     if (!board) return;
+    hideTip();
     document.title = board.title || board.name;
     const updated = board.updatedAt ? `Updated ${fmtTime(board.updatedAt)}` : "";
     app.innerHTML = `
@@ -561,14 +562,16 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     tip.style.left = Math.max(8, Math.min(x, window.innerWidth - t.width - 8)) + "px";
     tip.style.top = y + "px";
   }
-  const hideTip = () => { tipFor = null; tip.hidden = true; };
+  function hideTip() { tipFor = null; tip.hidden = true; }
   const tipTarget = (e) => e.target.closest && e.target.closest("[data-tip]");
   document.addEventListener("pointerover", (e) => { const el = tipTarget(e); if (el) { if (el !== tipFor) showTip(el); } else if (tipFor) hideTip(); });
-  document.addEventListener("pointerdown", (e) => { const el = tipTarget(e); if (el && e.pointerType !== "mouse") showTip(el); });
+  // A mouse press may start a graph pan, which would leave the tip behind.
+  document.addEventListener("pointerdown", (e) => { const el = tipTarget(e); if (el && e.pointerType !== "mouse") showTip(el); else hideTip(); });
+  document.addEventListener("wheel", hideTip, { passive: true });
   document.addEventListener("focusin", (e) => { const el = tipTarget(e); if (el) showTip(el); });
   document.addEventListener("focusout", hideTip);
   window.addEventListener("scroll", hideTip, { passive: true });
-  document.addEventListener("pointerleave", hideTip);
+  document.documentElement.addEventListener("pointerleave", hideTip);
 
   app.addEventListener("keydown", (e) => {
     const j = e.target.closest && e.target.closest(".gnode");

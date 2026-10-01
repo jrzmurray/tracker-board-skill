@@ -9,6 +9,7 @@
   --todo:#5a6878;--todo-bg:#e6eaef;--active:#9a5b00;--active-bg:#fbecd2;--review:#6a3fb5;--review-bg:#ece4f8;
   --waiting:#4c6070;--waiting-bg:#e2e9ee;--blocked:#b3261e;--blocked-bg:#f9e0dd;--done:#23744a;--done-bg:#dcf0e3;
   --ongoing:#1f6f86;--ongoing-bg:#dbeff4;--external:#7a5a2e;--external-bg:#f1e8da;--dropped:#8792a0;--dropped-bg:#eceff2;
+  --pct-none:#b3261e;--pct-low:#c25e00;--pct-mid:#8f7400;--pct-full:#23744a;
   --display:"Schibsted Grotesk",ui-sans-serif,system-ui,sans-serif;
   --body:"Public Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -19,6 +20,7 @@
   --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
   --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
   --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
+  --pct-none:#ff8f84;--pct-low:#ffa45c;--pct-mid:#e9d45f;--pct-full:#7fd6a2;
   color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
@@ -26,6 +28,7 @@
   --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
   --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
   --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
+  --pct-none:#ff8f84;--pct-low:#ffa45c;--pct-mid:#e9d45f;--pct-full:#7fd6a2;
   color-scheme:dark}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);margin:0;padding-block:28px 64px;padding-inline:max(16px,3vw)}
@@ -50,9 +53,14 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .wavehead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:10px}
 .wavehead .wid{font:600 12px var(--mono);color:var(--accent);background:var(--accent-tint);padding:1px 7px;border-radius:3px}
 .wavehead .count{font:12px var(--mono);color:var(--muted);margin-left:auto}
-.lanegroup+.lanegroup{margin-top:22px}
-.lanehead h3{font:600 15px var(--display);margin:0}
-.wavehead+.lanegroup>.lanehead{margin-top:4px}
+.lanegroup+.lanegroup{margin-top:18px}
+.lanehead{margin:0;padding:8px 2px}
+.lanehead h2,.lanehead h3{font:600 16px var(--display);margin:0}
+.lanerule{border:0;border-top:1px solid var(--muted);opacity:.55;margin:0}
+.lanerule+.cols{margin-top:8px}
+.count.pct-none{color:var(--pct-none)}.count.pct-low{color:var(--pct-low)}
+.count.pct-mid{color:var(--pct-mid)}.count.pct-full{color:var(--pct-full)}
+.count[class*="pct-"]{font-weight:600}
 .wavenotes{color:var(--muted);font-size:14px;margin:-4px 0 10px;max-width:80ch}
 .cols,.phase>summary{display:grid;grid-template-columns:minmax(150px,1.3fr) minmax(130px,1fr) minmax(90px,.7fr) minmax(110px,.8fr) 48px;gap:12px;align-items:start}
 .cols{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding:0 10px 6px;border-bottom:1px solid var(--rule)}
@@ -192,7 +200,12 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const statusOf = new Map(phasesOf(b).map(({ phase }) => [keyOf(phase.id), phase.status]));
     const single = b.waves.length === 1 && !b.waves[0].title && !b.waves[0].notes;
     const cols = `<div class="cols"><span>Phase</span><span>Status</span><span>Depends on</span><span>PR</span><span></span></div>`;
-    const tally = (ps) => `<span class="count">${ps.filter((p) => p.status === "done").length}/${ps.length} done</span>`;
+    // done count coloured by completion: 0% red, 1-50% orange, 51-99% yellow, 100% green
+    const tally = (ps) => {
+      const done = ps.filter((p) => p.status === "done").length, pct = ps.length ? done / ps.length * 100 : null;
+      const cls = pct == null ? "" : pct === 0 ? "pct-none" : pct <= 50 ? "pct-low" : pct < 100 ? "pct-mid" : "pct-full";
+      return `<span class="count ${cls}" title="${pct == null ? "" : Math.round(pct) + "% done"}">${done}/${ps.length} done</span>`;
+    };
     return b.waves.map((w) => {
       const lanes = new Map();
       for (const p of w.phases) {
@@ -203,7 +216,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       const groups = [...lanes].map(([lane, ps]) => ({ lane, ps, rows: ps.filter((p) => !filter || p.status === filter) }))
         .filter((g) => !filter || g.rows.length);
       if (filter && !groups.length) return "";
-      const laneHead = (g, tag) => `<div class="wavehead lanehead"><${tag}>${g.lane ? `Lane ${esc(g.lane)}` : "No lane"}</${tag}>${tally(g.ps)}</div>`;
+      const laneHead = (g, tag) => `<hr class="lanerule"><div class="wavehead lanehead"><${tag}>${g.lane ? `Lane ${esc(g.lane)}` : "No lane"}</${tag}>${tally(g.ps)}</div><hr class="lanerule">`;
       const tables = groups.map((g, i) => `<div class="lanegroup">
           ${single && i === 0 ? "" : laneHead(g, single ? "h2" : "h3")}
           ${cols}

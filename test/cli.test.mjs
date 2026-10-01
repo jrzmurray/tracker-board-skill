@@ -88,6 +88,12 @@ test("push prints an ArtifactData call pinned to the recorded version", () => {
   call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
   assert.equal(call.if_version, 7);
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].status, "done");
+
+  out = run(["insert", "--phase", "P2", "--deps", "P1"]).stdout;
+  call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  const doc = JSON.parse(fs.readFileSync(call.file_path, "utf8"));
+  assert.equal(doc.layout.engine, "elk-layered");
+  assert.deepEqual(doc.layout.edges.map((e) => [e.from, e.to]), [["P1", "P2"]]);
 });
 
 test("page and render embed the board safely", () => {

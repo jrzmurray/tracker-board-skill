@@ -194,9 +194,16 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 
   // Layered left-to-right DAG: column = longest dependency chain, rows ordered
   // by a barycenter pass so edges cross less.
-  function graph(b) {
-    const all = phasesOf(b).map(({ phase }) => phase);
-    if (!all.some((p) => p.deps.length)) return "";
+  // Geometry comes precomputed from the CLI (ELK layered layout, stored as
+  // b.layout). If it is missing or stale, fall back to a simple layering here.
+  function graphLayout(b, all) {
+    const L = b.layout;
+    if (L && Array.isArray(L.nodes)) {
+      const have = new Set(L.nodes.map((n) => keyOf(n.id)));
+      const edges = new Set((L.edges || []).map((e) => keyOf(e.from) + ">" + keyOf(e.to)));
+      const fresh = all.every((p) => (!p.deps.length || have.has(keyOf(p.id))) && p.deps.every((d) => edges.has(keyOf(d) + ">" + keyOf(p.id))));
+      if (fresh) return L;
+    }
     const byKey = new Map(all.map((p) => [keyOf(p.id), p]));
     const layer = new Map();
     const depth = (p, seen = new Set()) => {
@@ -211,42 +218,72 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const cols = [];
     all.forEach((p) => (cols[layer.get(p.id)] ||= []).push(p));
     const row = new Map();
+    const bary = (p) => {
+      const r = p.deps.map((d) => row.get(byKey.get(keyOf(d))?.id)).filter((x) => x != null);
+      return r.length ? r.reduce((s, x) => s + x, 0) / r.length : 1e6;
+    };
     cols.forEach((c, ci) => {
       if (ci > 0) c.sort((a, z) => bary(a) - bary(z));
       c.forEach((p, i) => row.set(p.id, i));
     });
-    function bary(p) {
-      const r = p.deps.map((d) => row.get(byKey.get(keyOf(d))?.id)).filter((x) => x != null);
-      return r.length ? r.reduce((s, x) => s + x, 0) / r.length : 1e6;
-    }
     const W = 168, H = 42, GX = 56, GY = 14, PAD = 8;
     const maxRows = Math.max(...cols.map((c) => c.length));
-    const width = cols.length * (W + GX) - GX + PAD * 2, height = maxRows * (H + GY) - GY + PAD * 2;
-    const pos = (p) => {
+    const pos = new Map();
+    const nodes = all.map((p) => {
       const c = cols[layer.get(p.id)], off = (maxRows - c.length) * (H + GY) / 2;
-      return { x: PAD + layer.get(p.id) * (W + GX), y: PAD + off + row.get(p.id) * (H + GY) };
-    };
-    let edges = "", nodes = "";
-    all.forEach((p) => {
-      const t = pos(p);
-      p.deps.forEach((d) => {
-        const q = byKey.get(keyOf(d)); if (!q) return;
-        const s = pos(q), x1 = s.x + W, y1 = s.y + H / 2, x2 = t.x, y2 = t.y + H / 2, mx = (x1 + x2) / 2;
-        edges += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 6},${y2}" fill="none" stroke="var(--rule)" stroke-width="1.5" marker-end="url(#tb-arrow)"/>`;
-      });
-      const title = String(p.title || "").replace(/[`*]/g, "");
-      const short = title.length > 22 ? title.slice(0, 21) + "…" : title;
-      nodes += `<g class="gnode" data-jump="${esc(p.id)}" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(LABEL[p.status])}">
-        <rect x="${t.x}" y="${t.y}" width="${W}" height="${H}" rx="6" fill="var(--${p.status}-bg)" stroke="var(--${p.status})" stroke-width="1.2"/>
-        <text x="${t.x + 10}" y="${t.y + 17}" font-size="12" font-weight="600" fill="var(--ink)">${esc(p.id.length > 20 ? p.id.slice(0, 19) + "…" : p.id)}</text>
-        <text x="${t.x + 10}" y="${t.y + 32}" font-size="10.5" fill="var(--muted)">${esc(short)}</text>
-        <title>${esc(p.id)} · ${esc(LABEL[p.status])}${title ? " · " + esc(title) : ""}</title></g>`;
+      const n = { id: p.id, x: PAD + layer.get(p.id) * (W + GX), y: PAD + off + row.get(p.id) * (H + GY), w: W, h: H };
+      pos.set(p.id, n);
+      return n;
     });
+    const edges = [];
+    all.forEach((p) => p.deps.forEach((d) => {
+      const q = byKey.get(keyOf(d)); if (!q) return;
+      const s = pos.get(q.id), t = pos.get(p.id);
+      const x1 = s.x + W, y1 = s.y + H / 2, x2 = t.x, y2 = t.y + H / 2, mx = x2 - GX / 2;
+      edges.push({ from: q.id, to: p.id, points: [[x1, y1], [mx, y1], [mx, y2], [x2, y2]] });
+    }));
+    return { engine: "fallback", width: cols.length * (W + GX) - GX + PAD * 2, height: maxRows * (H + GY) - GY + PAD * 2, groups: [], nodes, edges };
+  }
+
+  // Orthogonal polyline with softened corners.
+  function edgePath(pts, r = 5) {
+    let d = `M${pts[0][0]},${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i - 1], [x, y] = pts[i], [nx, ny] = pts[i + 1];
+      const r1 = Math.min(r, Math.hypot(x - px, y - py) / 2), r2 = Math.min(r, Math.hypot(nx - x, ny - y) / 2);
+      const ax = x - Math.sign(x - px) * r1, ay = y - Math.sign(y - py) * r1;
+      const bx = x + Math.sign(nx - x) * r2, by = y + Math.sign(ny - y) * r2;
+      d += ` L${ax},${ay} Q${x},${y} ${bx},${by}`;
+    }
+    const [lx, ly] = pts[pts.length - 1];
+    return d + ` L${lx},${ly}`;
+  }
+
+  const clip = (s, n) => s.length > n ? s.slice(0, Math.max(1, n - 1)) + "…" : s;
+
+  function graph(b) {
+    const all = phasesOf(b).map(({ phase }) => phase);
+    if (!all.some((p) => p.deps.length)) return "";
+    const byKey = new Map(all.map((p) => [keyOf(p.id), p]));
+    const L = graphLayout(b, all);
+    const groups = (L.groups || []).map((g) => `<g class="gwave">
+      <rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="8" fill="var(--soft)" fill-opacity=".45" stroke="var(--rule)"/>
+      <text x="${g.x + 12}" y="${g.y + 19}" font-size="11" font-weight="600" fill="var(--muted)">${esc(clip(g.title ? `${g.wave} · ${g.title}` : g.wave, Math.floor((g.w - 24) / 6.6)))}</text></g>`).join("");
+    const edges = (L.edges || []).map((e) => `<path d="${edgePath(e.points)}" fill="none" stroke="var(--rule)" stroke-width="1.5" marker-end="url(#tb-arrow)"/>`).join("");
+    const nodes = L.nodes.map((n) => {
+      const p = byKey.get(keyOf(n.id)); if (!p) return "";
+      const title = String(p.title || "").replace(/[`*]/g, "");
+      return `<g class="gnode" data-jump="${esc(p.id)}" style="cursor:pointer" tabindex="0" role="link" aria-label="${esc(p.id)} ${esc(LABEL[p.status])}">
+        <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="6" fill="var(--${p.status}-bg)" stroke="var(--${p.status})" stroke-width="1.2"/>
+        <text x="${n.x + 10}" y="${n.y + 17}" font-size="12" font-weight="600" fill="var(--ink)">${esc(clip(p.id, Math.floor((n.w - 18) / 7.2)))}</text>
+        <text x="${n.x + 10}" y="${n.y + 32}" font-size="10.5" fill="var(--muted)">${esc(clip(title, Math.floor((n.w - 18) / 6.3)))}</text>
+        <title>${esc(p.id)} · ${esc(LABEL[p.status])}${title ? " · " + esc(title) : ""}</title></g>`;
+    }).join("");
     const legend = STATUS.filter((s) => all.some((p) => p.status === s)).map((s) => `<span>${pill(s)}</span>`).join("");
     return `<section class="panel" aria-label="Dependency graph"><h2>Dependency graph</h2>
-      <div class="graphwrap"><svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Phase dependency graph">
+      <div class="graphwrap"><svg width="${L.width}" height="${L.height}" viewBox="0 0 ${L.width} ${L.height}" role="img" aria-label="Phase dependency graph" data-engine="${esc(L.engine || "")}">
       <defs><marker id="tb-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
-      ${edges}${nodes}</svg></div><div class="legend">${legend}</div></section>`;
+      ${groups}${edges}${nodes}</svg></div><div class="legend">${legend}</div></section>`;
   }
 
   function render() {

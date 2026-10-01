@@ -47,6 +47,8 @@ publish: ArtifactData {"action":"set","url":"…","collection":"board","doc_id":
 then:    trackerboard synced --board <name> --version <version from the result>
 ```
 
+The document includes the dependency-graph layout (computed with ELK by the CLI); the page only draws it. If the CLI warns that the layout was skipped, run `npm install` in the trackerboard repo; the publish still works.
+
 Make exactly that `ArtifactData` call (load the tool with ToolSearch `select:ArtifactData` if it is deferred), then run the `synced` line with the `version` from the result. The page updates live for anyone viewing it.
 
 - No `if_version` printed and the write is refused because the document exists: call `ArtifactData` `get` (`collection: "board"`, `doc_id: "state"`, `out_dir:` the scratchpad) to learn the version, run `trackerboard synced --version N`, then `trackerboard push` and retry.

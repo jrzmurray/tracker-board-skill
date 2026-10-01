@@ -117,3 +117,31 @@ test("log is newest first and capped", () => {
   assert.equal(b.log.length, B.LOG_LIMIT);
   assert.equal(b.log[0].text, `e${B.LOG_LIMIT + 4}`);
 });
+
+test("ELK layout: null without deps, non-overlapping nodes, edges touch their nodes, wave groups", async () => {
+  const { layoutBoard } = await import("../skills/trackerboard/scripts/lib/layout.mjs");
+  const b = B.newBoard("l");
+  B.insertWave(b, "A", { title: "Wave A", prefix: "A-" });
+  B.insertPhase(b, "A-1", { title: "first" });
+  assert.equal(await layoutBoard(b), null);
+  B.insertPhase(b, "A-2", { deps: ["A-1"] });
+  B.insertPhase(b, "A-3", { deps: ["A-1"] });
+  B.insertWave(b, "B", { prefix: "B-" });
+  B.insertPhase(b, "B-1", { deps: ["A-2", "A-3"] });
+  const L = await layoutBoard(b);
+  assert.equal(L.engine, "elk-layered");
+  assert.deepEqual(L.groups.map((g) => g.wave), ["A", "B"]);
+  assert.equal(L.nodes.length, 4);
+  for (const a of L.nodes) for (const z of L.nodes) {
+    if (a === z) continue;
+    assert.ok(a.x + a.w <= z.x || z.x + z.w <= a.x || a.y + a.h <= z.y || z.y + z.h <= a.y, `${a.id} overlaps ${z.id}`);
+  }
+  const node = new Map(L.nodes.map((n) => [n.id, n]));
+  const on = (n, [x, y]) => x >= n.x - 0.5 && x <= n.x + n.w + 0.5 && y >= n.y - 0.5 && y <= n.y + n.h + 0.5;
+  assert.equal(L.edges.length, 4);
+  for (const e of L.edges) {
+    assert.ok(on(node.get(e.from), e.points[0]), `edge ${e.from}->${e.to} starts on its source`);
+    assert.ok(on(node.get(e.to), e.points.at(-1)), `edge ${e.from}->${e.to} ends on its target`);
+  }
+  for (const n of L.nodes) assert.ok(n.x + n.w <= L.width && n.y + n.h <= L.height);
+});

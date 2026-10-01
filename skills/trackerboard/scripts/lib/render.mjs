@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { layoutBoard } from "./layout.mjs";
 
 const TEMPLATE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "page.html");
 
@@ -26,9 +27,17 @@ export function renderStandalone(board) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>\n${renderPage(board)}</body></html>\n`;
 }
 
-// The db document body: the board itself.
-export function docBody(board) {
-  return board;
+// The published form of a board: the board plus its computed graph layout.
+// If the layout engine is unavailable the page falls back to its own simple
+// layering, so a missing dependency never blocks a status update.
+export async function docBody(board) {
+  let layout = null;
+  try {
+    layout = await layoutBoard(board);
+  } catch (e) {
+    process.stderr.write(`warning: graph layout skipped (${e.code === "MODULE_NOT_FOUND" ? "elkjs not installed; run npm install in the trackerboard repo" : e.message})\n`);
+  }
+  return { ...board, layout };
 }
 
 export const DOC_COLLECTION = "board";

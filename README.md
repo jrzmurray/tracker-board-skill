@@ -10,7 +10,7 @@ Hand-maintained tracker artifacts make an agent read and rewrite ~50 KB of HTML 
 ./install.sh
 ```
 
-This symlinks `skills/trackerboard` into `~/.claude/skills/` and the CLI into `~/.local/bin/trackerboard`. It needs Node 20 or newer and has no dependencies.
+This symlinks `skills/trackerboard` into `~/.claude/skills/` and the CLI into `~/.local/bin/trackerboard`. It needs Node 20 or newer and runs `npm install` for its one dependency, [elkjs](https://github.com/kieler/elkjs) (the graph layout engine).
 
 ## Use
 
@@ -35,7 +35,9 @@ wave   id title prefix notes phases[]
 phase  id title lane status note req pr review notes deps[]
 ```
 
-`status` is one of `todo active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; the page draws it and `trackerboard dep graph` prints it as mermaid.
+`status` is one of `todo active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; `trackerboard dep graph` prints it as mermaid.
+
+The page draws the graph as plain SVG from geometry the CLI computes. Every publish runs ELK's layered algorithm (left to right, orthogonal edges, one box per wave when there are several) and stores the result as `layout` in the published document beside the board, so the page does no layout of its own. If elkjs is missing the CLI warns and publishes without `layout`, and the page falls back to a simple built-in layering; it does the same if the stored layout no longer matches the board's deps.
 
 Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 

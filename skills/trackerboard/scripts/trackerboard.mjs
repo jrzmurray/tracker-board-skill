@@ -104,8 +104,8 @@ function docFile(name) {
   return path.join(S.outDir(), `${name}.doc.json`);
 }
 
-function writeDoc(board) {
-  const body = JSON.stringify(docBody(board));
+async function writeDoc(board) {
+  const body = JSON.stringify(await docBody(board));
   if (Buffer.byteLength(body) > DOC_LIMIT) {
     throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte db limit; trim long fields or the log`);
   }
@@ -114,9 +114,9 @@ function writeDoc(board) {
   return docFile(board.name);
 }
 
-function pushInstruction(board) {
+async function pushInstruction(board) {
   const local = S.loadLocal(board.name);
-  const file = writeDoc(board);
+  const file = await writeDoc(board);
   if (!local.artifactUrl) {
     out(`publish: (no artifact linked; \`trackerboard page\` publishes one)`);
     return;
@@ -127,11 +127,11 @@ function pushInstruction(board) {
   out(`then:    trackerboard synced --board ${board.name} --version <version from the result>`);
 }
 
-function commit(board, opts, summary) {
+async function commit(board, opts, summary) {
   B.appendLog(board, opts.log);
   S.saveBoard(board);
   out(`ok: ${summary}`);
-  pushInstruction(board);
+  await pushInstruction(board);
 }
 
 // ---------- show ----------
@@ -266,7 +266,7 @@ const commands = {
     const { wave, phase } = B.insertPhase(board, phaseId, fields, { wave: waveId });
     const i = wave.phases.indexOf(phase);
     const nb = [wave.phases[i - 1]?.id, wave.phases[i + 1]?.id];
-    commit(board, opts, `inserted ${phase.id} into wave ${wave.id} (after ${nb[0] ?? "start"}, before ${nb[1] ?? "end"})`);
+    return commit(board, opts, `inserted ${phase.id} into wave ${wave.id} (after ${nb[0] ?? "start"}, before ${nb[1] ?? "end"})`);
   },
 
   update({ pos, opts }) {
@@ -295,7 +295,7 @@ const commands = {
     rejectLeftovers(opts, pos);
     if (!Object.keys(fields).length) throw new B.BoardError("update needs --phase, --wave, or a board field (--title --subtitle --lede --notes --repo-url)");
     Object.assign(board, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])));
-    commit(board, opts, `updated board ${Object.keys(fields).join(", ")}`);
+    return commit(board, opts, `updated board ${Object.keys(fields).join(", ")}`);
   },
 
   delete({ pos, opts }) {
@@ -311,7 +311,7 @@ const commands = {
     }
     if (waveId == null) throw new B.BoardError("delete needs a phase or --wave");
     const { wave, removedDeps } = B.deleteWave(board, waveId, { force });
-    commit(board, opts, `deleted wave ${wave.id}${removedDeps.length ? `; removed deps ${removedDeps.join(", ")}` : ""}`);
+    return commit(board, opts, `deleted wave ${wave.id}${removedDeps.length ? `; removed deps ${removedDeps.join(", ")}` : ""}`);
   },
 
   dep({ pos, opts }) {
@@ -355,15 +355,15 @@ const commands = {
     if (!text) throw new B.BoardError('log needs text: trackerboard log "<text>"');
     delete opts.log;
     rejectLeftovers(opts, []);
-    commit(board, { log: text }, "logged");
+    return commit(board, { log: text }, "logged");
   },
 
-  page({ opts }) {
+  async page({ opts }) {
     const name = boardName(opts);
     const board = S.loadBoard(name);
     const file = path.join(S.outDir(), `${name}.page.html`);
     fs.mkdirSync(S.outDir(), { recursive: true });
-    fs.writeFileSync(file, renderPage(board));
+    fs.writeFileSync(file, renderPage(await docBody(board)));
     const local = S.loadLocal(name);
     out(`ok: wrote ${file}`);
     if (local.artifactUrl) {
@@ -385,9 +385,9 @@ const commands = {
     out(`ok: ${name} -> ${opts.url}`);
   },
 
-  push({ opts }) {
+  async push({ opts }) {
     const name = boardName(opts);
-    pushInstruction(S.loadBoard(name));
+    await pushInstruction(S.loadBoard(name));
   },
 
   synced({ opts }) {
@@ -427,11 +427,11 @@ const commands = {
     if (!opts["no-bind"]) commands.bind({ opts: { board: name, branch: opts.branch } });
   },
 
-  render({ opts }) {
+  async render({ opts }) {
     const name = boardName(opts);
     const file = opts.out || path.join(S.outDir(), `${name}.html`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, renderStandalone(S.loadBoard(name)));
+    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name))));
     out(`ok: wrote ${file}`);
   },
 };
@@ -439,22 +439,20 @@ const commands = {
 commands.ls = commands.boards;
 commands.rm = commands.delete;
 
-function main(argv) {
+async function main(argv) {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "--help" || cmd === "-h") return commands.help();
   const fn = commands[cmd];
   if (!fn) throw new B.BoardError(`unknown command "${cmd}"; run trackerboard help`);
   const args = parseArgs(rest);
   if (args.opts.help) return commands.help();
-  fn(args);
+  await fn(args);
 }
 
-try {
-  main(process.argv.slice(2));
-} catch (e) {
+main(process.argv.slice(2)).catch((e) => {
   if (e instanceof B.BoardError) {
     process.stderr.write(`error: ${e.message}\n`);
     process.exit(1);
   }
   throw e;
-}
+});

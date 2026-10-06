@@ -1,6 +1,7 @@
 ---
 name: trackerboard
 description: Create and edit phase/wave TODO tracker boards (published as claude.ai artifacts) with a script instead of hand-editing HTML. Use for any tracker-board change - create a board, insert/update/delete a phase or wave, change a status/PR/notes field, add or remove dependencies - and whenever a plan's tracker artifact needs its status updated.
+argument-hint: "[create|insert|update|delete|dep|log|show|refresh|page|import|github] [--board name] [--phase id] …"
 ---
 
 # trackerboard

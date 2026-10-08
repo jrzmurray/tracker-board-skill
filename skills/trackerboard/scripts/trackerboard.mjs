@@ -19,7 +19,8 @@ Boards
   create <name> [--title T] [--repo-url URL] [--branch] [--no-bind]
                          Create a board and bind it to the current repo (or dir).
   boards                 List boards; marks the one this directory resolves to.
-  bind [--board B] [--branch]     Bind a board to this repo (optionally this branch only).
+  bind [--board B] [--branch]     Record that this repo (all its worktrees) uses a board, so --board can
+                         be omitted here. Local to this machine; --branch limits it to this branch.
   unbind [--board B] [--all]      Remove this directory's binding (or every binding).
   remove <name> --force           Delete a board and its local state.
 
@@ -48,7 +49,7 @@ Phase fields
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
-Publish
+Publish (Claude-specific: prints Artifact/ArtifactData tool calls; the CLI never contacts Claude)
   page                    Write the publishable page and print the first-publish steps.
   link --url URL          Record the artifact URL for this board.
   push                    Write the db document and print the ArtifactData call.

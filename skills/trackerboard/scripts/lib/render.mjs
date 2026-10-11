@@ -21,7 +21,12 @@ let markdownIt = null;
 function markdownItSource() {
   if (markdownIt == null) {
     const file = path.join(path.dirname(require.resolve("markdown-it/package.json")), "dist", "browser", "markdown-it.umd.min.js");
-    markdownIt = fs.readFileSync(file, "utf8").replace(/\n\/\/# sourceMappingURL=\S+\s*$/, "").replace(/<\/(script)/gi, "<\\/$1");
+    // The library writes U+FFFD as a raw character inside template literals.
+    // The Artifact publish tool refuses that character, so emit the equivalent escape.
+    markdownIt = fs.readFileSync(file, "utf8")
+      .replace(/\n\/\/# sourceMappingURL=\S+\s*$/, "")
+      .replace(/<\/(script)/gi, "<\\/$1")
+      .replace(/�/g, "\\uFFFD");
   }
   return markdownIt;
 }

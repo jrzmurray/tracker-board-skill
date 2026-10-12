@@ -247,7 +247,9 @@ function makeBackend(context) {
         const row = readRow(db, context.name);
         const current = row ? rowRevision(row) : 0;
         if (expectedRevision != null && expectedRevision !== current) {
-          throw new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
+          const error = new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
+          error.code = "TRACKERBOARD_REVISION_CONFLICT";
+          throw error;
         }
         if (!row || row.board_json == null) throw new BoardError(`board ${context.name} does not exist`);
         const revision = incrementRevision(current);

@@ -82,7 +82,7 @@ export function prLifecycle(pr) {
   const state = String(pr.state || (pr.mergedAt ? "MERGED" : "OPEN")).toUpperCase();
   if (pr.mergedAt || state === "MERGED") return { status: "done", label: "Merged" };
   if (state === "CLOSED") return { status: "dropped", label: "Closed" };
-  if (String(pr.mergeStateStatus || "").toUpperCase() === "CONFLICTING") {
+  if (["DIRTY", "CONFLICTING"].includes(String(pr.mergeStateStatus || "").toUpperCase())) {
     return { status: "blocked", label: "Conflicting" };
   }
   if (pr.isDraft) return { status: "todo", label: "Draft" };

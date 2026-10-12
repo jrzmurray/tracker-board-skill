@@ -271,3 +271,41 @@ esac
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "todo");
   assert.match(run(["import", "b", "--from", file, "--replace"]).stdout, /already matches/);
 });
+
+test("migration verifies SQLite, detaches Claude publishing, and exports active data back to JSON", () => {
+  const state = sandbox();
+  const backendHome = path.join(state.dir, "backend-data");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "migrate-me"]);
+  state.run(["insert", "--phase", "P1", "--title", "before migration"]);
+  state.run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  state.run(["synced", "--version", "1"]);
+
+  fs.mkdirSync(backendHome, { recursive: true });
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({ backend: "github" }));
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+
+  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json → sqlite/);
+  assert.equal(fs.existsSync(path.join(backendHome, "repos")), false);
+
+  const moved = state.run(["migrate", "--to", "sqlite"], env);
+  assert.match(moved.stdout, /read-back verified/);
+  assert.match(state.run(["migrate", "--to", "sqlite"], env).stdout, /already uses sqlite/);
+  const recovery = moved.stdout.match(/recovery: (.+)/)[1];
+  assert.equal(fs.statSync(recovery).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");
+  assert.match(state.run(["show"], env).stdout, /P1 +todo +before migration/);
+
+  state.run(["update", "--phase", "P1", "--title", "edited in SQLite"], env);
+  const detached = state.run(["refresh"], { ...env, ok: false });
+  assert.equal(detached.status, 1);
+  assert.match(detached.stderr, /artifact was detached.*unavailable/);
+
+  const exported = state.run(["migrate", "--to", "json"], env);
+  assert.match(exported.stdout, /read-back verified/);
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show"], env).stdout, /P1 +todo +edited in SQLite/);
+  assert.match(state.run(["migrate", "--to", "json"], env).stdout, /already uses json/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.json"), "utf8")).waves[0].phases[0].title, "edited in SQLite");
+});

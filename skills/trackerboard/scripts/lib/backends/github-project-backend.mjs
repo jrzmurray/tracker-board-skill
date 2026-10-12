@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BoardError, SCHEMA, normalizeBoard } from "../board.mjs";
+import { mergeBoards } from "../merge.mjs";
 import * as core from "./github-project-core.mjs";
 import { createGitHubProjectFieldManager } from "./github-project-fields.mjs";
 import { createGitHubProjectSynchronizer } from "./github-project-sync.mjs";
@@ -8,7 +9,7 @@ const {
   AUTH_RECOVERY, GENERIC_PROJECT_TITLE, MIN_GH_VERSION, PROJECT_FIELDS,
   assertSizes, conflicts, createGitHubClient, draftItemId, fieldByName,
   graphql, isDraftItem, isPrivate, itemBody, itemId, itemTitle,
-  listFromJson, mergeDependencyDeltas, parseGitHubRepo, parseJson, phaseDataFromBody,
+  listFromJson, parseGitHubRepo, parseJson, phaseDataFromBody,
   projectDetails, projectId, projectNumber, readMetadata, readmeOf, revisionConflict,
   revisionToken, run, statusValue, valueOf, verifyGitHubCli,
 } = core;
@@ -213,11 +214,21 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     if (found.length) throw revisionConflict(`GitHub Project changed in the same fields: ${found.join(", ")}. Reload the board and retry.`);
   }
 
+  function mergeIndependentChanges(previous, desired, remote) {
+    if (!previous || !desired || !remote) return;
+    assertNoConflicts(previous, desired, remote);
+    const result = mergeBoards(previous, desired, remote);
+    if (result.conflicts.length) throw revisionConflict(`GitHub Project changed in the same fields: ${result.conflicts.join(", ")}. Reload the board and retry.`);
+    const updatedAt = desired.updatedAt;
+    for (const key of Object.keys(desired)) delete desired[key];
+    Object.assign(desired, result.board);
+    if (updatedAt) desired.updatedAt = updatedAt;
+  }
+
   function rereadBeforeMutation(ref, previous, desired) {
     const latest = readRemote(ref, { allowMissing: true });
     if (previous && desired && latest?.loaded?.board) {
-      assertNoConflicts(previous, desired, latest.loaded.board);
-      mergeDependencyDeltas(previous, desired, latest.loaded.board);
+      mergeIndependentChanges(previous, desired, latest.loaded.board);
     }
     // Project item updates have no compare-and-swap. A same-field write that
     // lands after this read and before the next command remains last-write-wins.
@@ -283,7 +294,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     } catch {
       privacyFailure(ref, created);
     }
-    if (previous && desired && beforeEdit?.loaded?.board) assertNoConflicts(previous, desired, beforeEdit.loaded.board);
+    if (previous && desired && beforeEdit?.loaded?.board) mergeIndependentChanges(previous, desired, beforeEdit.loaded.board);
     try {
       run(client, ["project", "edit", String(ref.number), "--owner", ref.owner, "--visibility", "PRIVATE"]);
       latest = projectSnapshot(ref);
@@ -428,8 +439,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     } else if (!previous && expectedRevision != null && expectedRevision !== observedRevision) {
       throw revisionConflict("GitHub Project changed since the expected revision; reload and retry.");
     }
-    assertNoConflicts(previous, desired, snapshot.loaded.board);
-    mergeDependencyDeltas(previous, desired, snapshot.loaded.board);
+    mergeIndependentChanges(previous, desired, snapshot.loaded.board);
     const boardId = snapshot.metadata.boardId;
     const wantedIds = new Set(desired.waves.flatMap((wave) => wave.phases.map((phase) => phase.id)));
     const pendingDelete = deletionManifest(snapshot, wantedIds, snapshot.loaded.phaseItems || {});

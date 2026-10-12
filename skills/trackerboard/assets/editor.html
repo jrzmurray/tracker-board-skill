@@ -136,6 +136,7 @@
         const control = element(multiline ? "textarea" : "input");
         control.name = name;
         control.value = String(value ?? "");
+        control.dataset.initialValue = control.value;
         if (!multiline) control.type = type;
         control.maxLength = maxLength;
         label.append(control);
@@ -146,6 +147,7 @@
         const label = element("label", "Status");
         const select = element("select");
         select.name = "status";
+        select.dataset.initialValue = selected;
         for (const status of statusOrder) {
           const option = element("option", statusLabels[status]);
           option.value = status;
@@ -181,6 +183,36 @@
         for (const name of names) values[name] = form.elements.namedItem(name).value;
         return values;
       }
+      function changedValues(form, names) {
+        return Object.fromEntries(names.flatMap((name) => { const control = form.elements.namedItem(name); return control.value === control.dataset.initialValue ? [] : [[name, control.value]]; }));
+      }
+      function formKey(form) {
+        const { editorForm: kind, id, wave } = form.dataset;
+        return kind === "phase" || kind === "wave" ? `${kind}:${id}` : kind === "phase-create" ? `${kind}:${wave}` : kind;
+      }
+      function captureDrafts(exceptForm, command) {
+        return [...document.querySelectorAll("form[data-editor-form]")].filter((form) => form !== exceptForm).flatMap((form) => {
+          const values = Object.fromEntries([...form.elements].filter((control) => control.name && control.dataset.initialValue !== undefined && control.value !== control.dataset.initialValue).map((control) => [control.name, control.value]));
+          if (!Object.keys(values).length) return [];
+          const key = command?.type === "wave.update" && form.dataset.editorForm === "phase-create" && form.dataset.wave === command.id && command.rename
+            ? `phase-create:${command.rename}` : formKey(form);
+          return [{ key, values }];
+        });
+      }
+      function restoreDrafts(drafts) {
+        const forms = [...document.querySelectorAll("form[data-editor-form]")];
+        return drafts.flatMap((draft) => {
+          const form = forms.find((candidate) => formKey(candidate) === draft.key);
+          if (!form) return [draft.key];
+          return Object.entries(draft.values).flatMap(([name, value]) => {
+            const control = form.elements.namedItem(name);
+            if (!control || (control.tagName === "SELECT" && ![...control.options].some((option) => option.value === value))) return [`${draft.key}.${name}`];
+            control.value = value;
+            return [];
+          });
+        });
+      }
+      const hasDrafts = (form = null) => captureDrafts(null, null).some((draft) => !form || draft.key === formKey(form));
       function setFormDisabled(form, value) {
         for (const control of form.elements) control.disabled = value;
       }
@@ -189,7 +221,7 @@
         button(actionBar, labelText, options);
         return actionBar;
       }
-      function renderBoard(board) {
+      function renderBoard(board, drafts = []) {
         document.title = `${board.title || board.name} · Trackerboard`;
         document.getElementById("page-title").textContent = board.title || board.name;
         const boardForm = document.getElementById("board-form");
@@ -214,6 +246,7 @@
         const afterLabel = element("label", "Insert after");
         const after = element("select"); after.name = "after";
         const first = element("option", "At end"); first.value = ""; after.append(first);
+        after.dataset.initialValue = "";
         for (const wave of board.waves) { const option = element("option", `${wave.id} · ${wave.title || "untitled"}`); option.value = wave.id; after.append(option); }
         afterLabel.append(after); createWaveGrid.append(afterLabel); createWave.append(createWaveGrid);
         pushButton(createWave, "Add wave", { primary: true });
@@ -223,6 +256,9 @@
         if (!board.waves.length) waveList.append(element("p", "No waves yet. Add a wave to start planning." )).className = "empty";
         for (const wave of board.waves) waveList.append(renderWave(wave, board.waves));
         renderLog(board.log || []);
+        const lost = restoreDrafts(drafts);
+        dirty = hasDrafts();
+        return lost;
       }
       function renderWave(wave, waves) {
         const section = element("section"); section.className = "wave"; section.setAttribute("aria-label", `Wave ${wave.id}`);
@@ -282,6 +318,7 @@
       }
       function createWaveSelect(labelText, name, selected, waves) {
         const label = element("label", labelText); const select = element("select"); select.name = name;
+        select.dataset.initialValue = selected;
         for (const wave of waves) { const option = element("option", `${wave.id} · ${wave.title || "untitled"}`); option.value = wave.id; option.selected = wave.id === selected; select.append(option); }
         label.append(select); return label;
       }
@@ -315,7 +352,10 @@
 
       function updateCommand(form) {
         const kind = form.dataset.editorForm;
-        if (kind === "board") return { type: "board.update", fields: inputValues(form, ["title", "subtitle", "lede", "notes", "repoUrl"]) };
+        if (kind === "board") {
+          const fields = changedValues(form, ["title", "subtitle", "lede", "notes", "repoUrl"]);
+          return Object.keys(fields).length ? { type: "board.update", fields } : null;
+        }
         if (kind === "wave-create") {
           const values = inputValues(form, ["id", "title", "prefix", "notes", "after"]);
           const command = { type: "wave.create", id: values.id, fields: { title: values.title, prefix: values.prefix, notes: values.notes } };
@@ -323,9 +363,11 @@
           return command;
         }
         if (kind === "wave") {
-          const values = inputValues(form, ["rename", "title", "prefix", "notes"]);
-          const command = { type: "wave.update", id: form.dataset.id, fields: { title: values.title, prefix: values.prefix, notes: values.notes } };
-          if (values.rename.trim()) command.rename = values.rename;
+          const changed = changedValues(form, ["rename", "title", "prefix", "notes"]);
+          const fields = Object.fromEntries(Object.entries(changed).filter(([key]) => key !== "rename"));
+          const command = { type: "wave.update", id: form.dataset.id, fields };
+          if (changed.rename?.trim()) command.rename = changed.rename;
+          if (!Object.keys(fields).length && !command.rename) return null;
           return command;
         }
         if (kind === "phase-create") {
@@ -335,11 +377,12 @@
         }
         if (kind === "phase") {
           const names = ["title", "lane", "owner", "deps", "status", "toWave", "note", "issue", "pr", "req", "review", "notes"];
-          const values = inputValues(form, names);
-          const command = { type: "phase.update", id: form.dataset.id, wave: form.dataset.wave,
-            fields: { title: values.title, lane: values.lane, owner: values.owner, deps: parseDependencies(values.deps), status: values.status,
-              note: values.note, issue: values.issue, pr: values.pr, req: values.req, review: values.review, notes: values.notes } };
-          if (values.toWave !== form.dataset.wave) command.toWave = values.toWave;
+          const values = changedValues(form, names);
+          const fields = Object.fromEntries(Object.entries(values).filter(([key]) => key !== "toWave"));
+          if (fields.deps !== undefined) fields.deps = parseDependencies(fields.deps);
+          const command = { type: "phase.update", id: form.dataset.id, wave: form.dataset.wave, fields };
+          if (values.toWave !== undefined) command.toWave = values.toWave;
+          if (!Object.keys(fields).length && command.toWave === undefined) return null;
           return command;
         }
         if (kind === "log") return { type: "log.append", text: form.elements.namedItem("text").value };
@@ -347,8 +390,9 @@
       }
       function parseDependencies(value) { return value.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean); }
 
-      async function submitCommand(command) {
+      async function submitCommand(command, sourceForm = null) {
         if (!snapshot || busy) return;
+        const drafts = captureDrafts(sourceForm, command);
         busy = true;
         document.querySelectorAll("form").forEach((form) => setFormDisabled(form, true));
         setConnection("Saving…");
@@ -367,10 +411,11 @@
             setConnection(result.error || "Save failed. Your edits are still here.", "error");
           } else {
             snapshot = result;
-            dirty = false;
             conflictSnapshot = null;
-            renderBoard(snapshot.board);
-            setConnection("Saved.", "saved");
+            const lost = renderBoard(snapshot.board, drafts);
+            setConnection(lost.length
+              ? `Saved. Unsaved edits could not be retained for removed records: ${lost.join(", ")}.`
+              : dirty ? "Saved. Other unsaved edits are still here." : "Saved.", lost.length ? "conflict" : dirty ? "" : "saved");
           }
         } catch {
           setConnection("Could not reach the local editor server. Your edits are still here.", "error");
@@ -382,17 +427,17 @@
       function confirmAction(message) { return window.confirm(message); }
 
       document.addEventListener("input", (event) => {
-        if (event.target.closest("form")) { dirty = true; setConnection("Unsaved edits. Save to apply."); }
+        if (event.target.closest("form")) { dirty = hasDrafts(); setConnection("Unsaved edits. Save to apply."); }
       });
       document.addEventListener("change", (event) => {
-        if (event.target.closest("form")) { dirty = true; setConnection("Unsaved edits. Save to apply."); }
+        if (event.target.closest("form")) { dirty = hasDrafts(); setConnection("Unsaved edits. Save to apply."); }
       });
       document.addEventListener("submit", (event) => {
         const form = event.target;
         if (!(form instanceof HTMLFormElement) || !form.dataset.editorForm) return;
         event.preventDefault();
         const command = updateCommand(form);
-        if (command) submitCommand(command);
+        if (command) submitCommand(command, form);
       });
       document.addEventListener("click", (event) => {
         const action = event.target.closest("[data-action]");
@@ -400,11 +445,18 @@
         const form = action.closest("form");
         if (action.dataset.action === "delete-wave") {
           const wave = snapshot.board.waves.find((item) => item.id === form.dataset.id);
-          if (wave && confirmAction(`Delete wave ${wave.id}${wave.phases.length ? ` and its ${wave.phases.length} phase(s)` : ""}?`)) {
-            submitCommand({ type: "wave.delete", id: wave.id, force: wave.phases.length > 0 });
+          if (!wave) return;
+          const phaseKeys = new Set(wave.phases.map((phase) => `phase:${phase.id}`));
+          const affected = captureDrafts(null, null).filter((draft) => phaseKeys.has(draft.key) || draft.key === `phase-create:${wave.id}` || draft.key === `wave:${wave.id}`);
+          const loss = affected.length ? ` This will discard unsaved edits in ${affected.length} form(s).` : "";
+          if (confirmAction(`Delete wave ${wave.id}${wave.phases.length ? ` and its ${wave.phases.length} phase(s)` : ""}?${loss}`)) {
+            submitCommand({ type: "wave.delete", id: wave.id, force: wave.phases.length > 0 }, form);
           }
-        } else if (action.dataset.action === "delete-phase" && confirmAction(`Delete phase ${form.dataset.id}?`)) {
-          submitCommand({ type: "phase.delete", id: form.dataset.id, wave: form.dataset.wave });
+        } else if (action.dataset.action === "delete-phase") {
+          const loss = hasDrafts(form) ? " This will discard this phase's unsaved edits." : "";
+          if (confirmAction(`Delete phase ${form.dataset.id}?${loss}`)) {
+            submitCommand({ type: "phase.delete", id: form.dataset.id, wave: form.dataset.wave }, form);
+          }
         }
       });
       reloadButton.addEventListener("click", () => {
@@ -415,7 +467,6 @@
         renderBoard(snapshot.board);
         setConnection("Loaded the latest board snapshot.");
       });
-
       async function refreshSnapshot() {
         if (busy) return;
         try {

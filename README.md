@@ -1,6 +1,6 @@
 # trackerboard
 
-Harness-neutral phase and wave boards for multi-PR plans. The CLI is JSON-backed by default and works from a shell or any agent harness without Claude. SQLite, GitHub Projects, and a local browser editor are planned optional integrations.
+Harness-neutral phase and wave boards for multi-PR plans. The CLI is JSON-backed by default and works from a shell or any agent harness without Claude. SQLite, private GitHub Projects, and a local browser editor are optional integrations.
 
 Boards are edited with one CLI command per change. Use the optional Claude artifact integration only when a live shared page is useful; the board data remains structured and the CLI never edits page HTML.
 
@@ -57,7 +57,7 @@ trackerboard <command> [options]
     unbind                         Remove this directory's binding (the board itself is untouched).
       --board B                      Board to unbind.
       --all                          Remove every binding for the board.
-    remove <name> --force          Delete a board and its local state (--force is required).
+    remove <name> --force          Delete a board/local state and its bound GitHub Project, if any.
 
   Read
     show                           Compact board summary, grouped by wave and lane.
@@ -139,6 +139,13 @@ trackerboard <command> [options]
       --in title,branch,labels,body  Where to look for phase ids.
       --dry-run                      List the changes without writing.
       --file FILE                    Update a board JSON file instead of a board.
+  refresh-prs                    Refresh derived per-PR lifecycle badges (60-second cache).
+
+  Backend and local editor
+    backend [--json]              Show the resolved backend and configuration sources.
+    migrate --to json|sqlite|github [--dry-run]
+                                   Migrate and verify before switching this board's backend.
+    serve [--port N]               Open an editable board on a loopback-only URL.
 
   Environment
     TRACKERBOARD_BOARD             Board name to use when --board is omitted.
@@ -148,7 +155,7 @@ trackerboard <command> [options]
     TRACKERBOARD_DATA_HOME          Backend config directory (default: ~/.local/share/trackerboard).
 ```
 
-This command reference describes the currently available CLI. Backend inspection, migration, GitHub Projects, `serve`, and cached PR badges are described as coming soon below; do not assume an older installed CLI supports them.
+These commands are available in the CLI installed from this repository. Older standalone copies may not include the optional backends or editor.
 
 ## Optional Claude artifact integration
 
@@ -167,7 +174,7 @@ Publishing to a claude.ai artifact is done by an agent, not by the CLI. The comm
 
 Once a board is linked, every write also prints a `publish:` step (an `ArtifactData set`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).
 
-Everything else (`create`, `bind`, `unbind`, `boards`, `remove`, `show`, `insert`, `update`, `delete`, `dep`, `log`, `import`, `github`, `render`) works without Claude. An unlinked board has no refresh or publish steps; `render` writes a static HTML snapshot you can open anywhere. The artifact integration is optional. Migration to SQLite or GitHub Projects leaves the original artifact untouched and detached; it becomes a read-only snapshot and its refresh/pull/push workflow is no longer available.
+Everything else (`create`, `bind`, `unbind`, `boards`, `remove`, `show`, `insert`, `update`, `delete`, `dep`, `log`, `import`, `github`, `refresh-prs`, `backend`, `migrate`, `serve`, `render`) works without Claude. An unlinked board has no refresh or publish steps; `render` writes a static HTML snapshot you can open anywhere. The artifact integration is optional. Migration to SQLite or GitHub Projects leaves the original artifact untouched and detached; it becomes a read-only snapshot and its refresh/pull/push workflow is no longer available.
 
 ## Storage backends and configuration
 
@@ -175,7 +182,7 @@ The default backend is local JSON. Board files remain under `~/.trackerboard` (o
 
 Configuration is merged key by key, from broadest to most specific: global config, repository config, then a board override. Global settings live in `~/.local/share/trackerboard/config.json`; repository settings live in `~/.local/share/trackerboard/repos/<bindingKey>.json`, shared by worktrees for that repository. The board override is stored in its local metadata file at `~/.trackerboard/boards/<name>.local.json`. The matching XDG or `TRACKERBOARD_DATA_HOME` root applies to the global and repository paths. Later layers override earlier values; nested backend settings merge as well.
 
-The setting is a top-level `backend` value: `"json"`, `"sqlite"`, or `"github"`. SQLite uses one database per repository binding at `~/.local/share/trackerboard/repos/<bindingKey>.sqlite` unless `sqlite.path` supplies a custom location. JSON remains the default and its board file is an inactive recovery snapshot after migration to another backend. There is no standalone backend-switch command: set the config value or migrate the board.
+The setting is a top-level `backend` value: `"json"`, `"sqlite"`, or `"github"`. It selects the default for new boards, and the selected backend is recorded in each board's local metadata. Changing a machine default therefore does not move existing boards. A legacy JSON board with no backend pointer remains on JSON while its JSON file exists; use `migrate` to move it, which writes the board override only after target verification. SQLite uses one database per repository binding at `~/.local/share/trackerboard/repos/<bindingKey>.sqlite` unless `sqlite.path` supplies a custom location. SQLite is durable local storage with atomic writes and a same-machine lock; it is not cross-machine coordination. JSON remains the default and its board file is an inactive recovery snapshot after migration to another backend. There is no standalone backend-switch command: set the config value for new boards or migrate an existing board.
 
 For example, a global or repository config can select SQLite and set a custom database path:
 
@@ -188,28 +195,34 @@ For example, a global or repository config can select SQLite and set a custom da
 
 For GitHub Projects, config selects the backend with `{ "backend": "github" }`; bootstrap records the private Project pointer locally.
 
-The backend inspection and migration commands are being integrated. Their settled forms are:
+To select GitHub Projects for one repository, put that same JSON object in `~/.local/share/trackerboard/repos/<bindingKey>.json`. Get the key from `trackerboard backend --json` on an existing board or the `key` printed by `trackerboard create`. Config files contain backend preferences only; GitHub authentication stays in `gh`'s credential store.
+
+Inspect the active backend and migrate a board with:
 
 ```text
 trackerboard backend [--json]
 trackerboard migrate --to json|sqlite|github [--dry-run]
 ```
 
-`backend` will report the resolved configuration and active backend; it is for inspection, not switching. Migration selects the destination backend and moves the current board into that store; `--dry-run` previews the operation. A JSON board left behind by migration is a recovery snapshot, not a source to restore over newer active data. Migrating back to JSON exports the active board; it does not restore the old snapshot. Timestamped backups may be used when replacing or exporting data. Exact availability depends on the CLI release; these commands may not yet exist in an installed build.
+`backend` reports the resolved configuration and active backend; it does not switch storage. Configuration merges key-by-key from `~/.local/share/trackerboard/config.json`, `~/.local/share/trackerboard/repos/<bindingKey>.json`, and the board's `.local.json` override. `XDG_DATA_HOME` or `TRACKERBOARD_DATA_HOME` changes the first two paths; `TRACKERBOARD_HOME` changes board metadata paths. JSON remains the default.
 
-### GitHub Projects backend (coming soon)
+`migrate` first writes a mode-0600 recovery snapshot, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
 
-The GitHub backend will create or reuse a private Project automatically when a board is created or migrated. It stores Trackerboard phases as private Project draft items, not as repository Issues; an `--issue` field refers to an existing issue and does not create one. Use GitHub CLI `gh` version 2.96.0 or newer and authenticate with Project access. If the `project` scope is missing, run `gh auth refresh -s project`; your account also needs permission to read and write the private Project. The CLI records the Project pointer in the board's local metadata, so do not hand-author GitHub identifiers in config.
+### GitHub Projects backend
+
+Select `{ "backend": "github" }` in the global or repository config before creating a board, or run `trackerboard migrate --to github` for an existing board. The owner is derived from the repository remote or board `repoUrl`. Bootstrap creates a generic Project, immediately changes it to PRIVATE, and verifies that visibility before adding board data. If privacy cannot be verified, Trackerboard attempts to delete the still-empty placeholder and stops with permission guidance. `gh project create` has no visibility option, so the separate private edit and verification are intentional. The Project pointer and stable board ID are saved in the machine-local board index; no token is requested, logged, or stored.
+
+Use GitHub CLI `gh` version 2.96.0 or newer, authenticated with Project read/write access. The required OAuth scope is `project`; if it is missing, run `gh auth refresh -s project` and retry. The signed-in account must have permission to create a private Project for the detected owner. See [GitHub CLI Project commands](https://cli.github.com/manual/gh_project), [Project privacy editing](https://cli.github.com/manual/gh_project_edit), and [draft Project items](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/adding-items-to-your-project).
 
 Each phase maps its title to the draft-item title and has custom fields for Trackerboard ID, Status, Wave, Lane, Owner, and Order. The versioned item-body block stores the phase note, req, review, notes, and dependencies. A versioned Project README metadata block stores board fields, wave order and metadata, the recent log, a stable board ID, and the phase-ID-to-item-ID mapping. The README block and each draft-item body block have independent 60 KiB limits. Writes over either limit are rejected; content is never silently truncated.
 
-GitHub Project writes will use reread-and-reconcile best effort because the API does not provide a compare-and-swap token. This reduces lost updates but is not a transaction or a guarantee against simultaneous writers. Coordinate writes to a shared board and inspect the board again after concurrent edits.
+GitHub Project writes use reread-and-reconcile best effort because the API does not provide a multi-item transaction or compare-and-swap token. Observed same-field conflicts are rejected, but a race after the last read remains best-effort last-write-wins. Bootstrap and retries reconcile by stable board, phase, and Project item IDs. Coordinate writes to a shared board and inspect it after concurrent changes. Phases are Project draft items only; Trackerboard does not create or close repository Issues, and an `--issue` field only references an existing Issue.
 
-### Local editor and PR badges (coming soon)
+### Local editor and PR badges
 
-`trackerboard serve [--board NAME] [--port N]` will serve an editable local browser view over the active backend. It is intended for editing the local board, not for publishing a public page.
+`trackerboard serve [--board NAME] [--port N]` serves an editable browser view over the active backend. It binds only to `127.0.0.1`; the printed URL contains a random per-run capability. Writes also require the matching bearer capability and same-origin request. The editor uses validated board operations rather than accepting a replacement board document. Local JSON and SQLite changes appear on the next two-second poll; GitHub Project state is cached for up to 60 seconds. You can open the printed URL in a browser panel beside the chat, but no Codex-specific integration is required.
 
-`trackerboard refresh-prs` will refresh a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: merging a PR changes the badge to Merged but does not change the phase status. The existing `trackerboard github` overlay only adds PR and issue references; it does not advance phase status.
+`trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is todo-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
 
 ## Data model
 

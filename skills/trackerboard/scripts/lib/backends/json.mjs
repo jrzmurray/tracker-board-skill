@@ -24,23 +24,25 @@ registerBackendFactory("json", {
     return {
       load() {
         const board = readJson(boardPath);
+        if (!board && context.config.migration) return null;
         if (!board) throw new BoardError(`board "${context.name}" has no JSON data`);
         return board;
       },
       create(board) {
-        if (readJson(boardPath)) throw new BoardError(`board "${context.name}" already exists`);
+        if (readJson(boardPath) && !context.config.migrationReplace) throw new BoardError(`board "${context.name}" already exists`);
         validate(board);
         writeJson(boardPath, board);
-        saveLocal({ ...loadLocal(), revision: 1 });
+        saveLocal({ ...loadLocal(), revision: Math.max(0, Number(loadLocal().revision) || 0) + 1 });
       },
       save(board, { expectedRevision } = {}) {
         validate(board);
         const currentLocal = loadLocal();
         const current = Number.isSafeInteger(currentLocal.revision) ? currentLocal.revision : 0;
         if (expectedRevision != null && expectedRevision !== current) {
-          throw new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
+          const error = new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
+          error.code = "TRACKERBOARD_REVISION_CONFLICT";
+          throw error;
         }
-        board.updatedAt = new Date().toISOString();
         writeJson(boardPath, board);
         saveLocal({ ...currentLocal, revision: current + 1 });
         return current + 1;

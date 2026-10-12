@@ -103,6 +103,11 @@ export function backendConfig(name, cwd) {
   const key = repositoryBindingKey(checked, cwd);
   const local = loadLocal(checked);
   const config = resolveConfig({ bindingKey: key, boardOverride: local.backendOverride || {} });
+  // Config selects the default for new boards. A legacy JSON board without an
+  // explicit backend pointer must stay on JSON until `migrate` verifies a
+  // target and writes that pointer; changing a machine default is not a
+  // migration and must not make the source disappear.
+  if (local.backendOverride?.backend == null && fs.existsSync(boardPath(checked))) config.backend = "json";
   if (!new Set(["json", "sqlite", "github"]).has(config.backend)) {
     throw new BoardError(`unknown backend ${JSON.stringify(config.backend)} for board ${checked}; expected json, sqlite, or github`);
   }
@@ -118,23 +123,38 @@ function backendFor(name, cwd = process.cwd()) {
   const config = backendConfig(checked, cwd);
   const cacheKey = `${checked}\0${config.backend}\0${JSON.stringify(config)}`;
   if (backendInstances.has(cacheKey)) return backendInstances.get(cacheKey);
+  const adapter = openBackendFor(checked, config, { cwd });
+  backendInstances.set(cacheKey, adapter);
+  return adapter;
+}
+
+function repositoryUrl(cwd, name) {
+  try {
+    const board = readJson(boardPath(name), null);
+    if (board?.repoUrl) return board.repoUrl;
+  } catch {}
+  try {
+    return execFileSync("git", ["remote", "get-url", "origin"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch { return ""; }
+}
+
+export function openBackendFor(name, config, { cwd = process.cwd(), repoUrl } = {}) {
+  const checked = checkName(name);
   const local = loadLocal(checked);
   const ctx = context(cwd);
-  const adapter = openBackend(config.backend, {
+  return openBackend(config.backend, {
     name: checked,
     bindingKey: config.bindingKey,
     config,
     cwd,
     repoRoot: ctx.root,
-    repoUrl: "",
+    repoUrl: repoUrl || repositoryUrl(cwd, checked),
     local,
     loadLocal: () => loadLocal(checked),
     saveLocal: (next) => saveLocal(checked, next),
     boardPath: boardPath(checked),
     dataHome: dataHome(),
   });
-  backendInstances.set(cacheKey, adapter);
-  return adapter;
 }
 
 export function loadBoard(name, options = {}) {
@@ -152,6 +172,7 @@ export function saveBoard(board, { expectedRevision, previous } = {}) {
   const name = checkName(board.name);
   const adapter = backendFor(name);
   const before = previous || boardSnapshots.get(board) || latestSnapshots.get(name) || null;
+  board.updatedAt = new Date().toISOString();
   const revision = adapter.save(board, { previous: before, expectedRevision });
   const snapshot = structuredClone(board);
   boardSnapshots.set(board, snapshot);
@@ -160,14 +181,24 @@ export function saveBoard(board, { expectedRevision, previous } = {}) {
 }
 
 export function createBoard(name, opts) {
-  if (boardExists(name)) throw new BoardError(`board "${name}" already exists`);
+  opts ||= {};
+  const exists = boardExists(name);
+  const resumeGithubBootstrap = exists && !fs.existsSync(boardPath(name)) &&
+    backendConfig(name).backend === "github" && !!loadLocal(name).githubProject?.boardId &&
+    loadLocal(name).githubProject?.bootstrapComplete !== true;
+  if (exists && !resumeGithubBootstrap) throw new BoardError(`board "${name}" already exists`);
   const board = newBoard(name, opts);
-  saveLocal(name, { bindings: [], artifactUrl: "", dbVersion: null, revision: 0, backendOverride: {} });
+  if (opts.repoUrl) board.repoUrl = opts.repoUrl;
+  if (!resumeGithubBootstrap) {
+    const selectedBackend = backendConfig(name).backend;
+    saveLocal(name, { bindings: [], artifactUrl: "", dbVersion: null, revision: 0, backendOverride: { backend: selectedBackend } });
+  }
   try {
-    backendFor(name).create(board);
+    openBackendFor(name, backendConfig(name), { repoUrl: board.repoUrl }).create(board);
     latestSnapshots.set(name, structuredClone(board));
   } catch (error) {
-    fs.rmSync(localPath(name), { force: true });
+    const resumable = backendConfig(name).backend === "github" && !!loadLocal(name).githubProject?.boardId;
+    if (!resumable) fs.rmSync(localPath(name), { force: true });
     fs.rmSync(boardPath(name), { force: true });
     throw error;
   }
@@ -202,8 +233,40 @@ export function saveBase(name, board) {
 }
 
 // One writer at a time across processes, so agents sharing this machine never
-// lose each other's read-modify-write. Waits up to 15s; a lock older than 30s
-// is treated as abandoned.
+// lose each other's read-modify-write. A live owner is never evicted for being
+// slow (GitHub writes can take a while); dead-owner locks are recoverable.
+function lockOwnerAlive(lockDir) {
+  try {
+    const pid = Number(fs.readFileSync(path.join(lockDir, "owner"), "utf8").trim());
+    if (!Number.isSafeInteger(pid) || pid < 1) return null;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code === "ESRCH" ? false : true;
+    }
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function removeStaleLock(lockDir) {
+  let initial;
+  try { initial = fs.statSync(lockDir); }
+  catch (error) { return error.code === "ENOENT"; }
+  const alive = lockOwnerAlive(lockDir);
+  const stale = alive === false || (alive == null && Date.now() - initial.mtimeMs > 30000);
+  if (!stale) return false;
+  try {
+    const current = fs.statSync(lockDir);
+    if (current.dev === initial.dev && current.ino === initial.ino) fs.rmSync(lockDir, { recursive: true });
+    return true;
+  } catch (error) {
+    return error.code === "ENOENT";
+  }
+}
+
 export async function withLock(fn) {
   const dir = path.join(home(), ".lock");
   fs.mkdirSync(home(), { recursive: true });
@@ -211,12 +274,12 @@ export async function withLock(fn) {
   for (;;) {
     try {
       fs.mkdirSync(dir);
+      try { fs.writeFileSync(path.join(dir, "owner"), `${process.pid}\n`, { flag: "wx", mode: 0o600 }); }
+      catch (error) { fs.rmSync(dir, { recursive: true, force: true }); throw error; }
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      try {
-        if (Date.now() - fs.statSync(dir).mtimeMs > 30000) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
-      } catch {}
+      if (removeStaleLock(dir)) continue;
       if (Date.now() > deadline) throw new BoardError(`another trackerboard command holds ${dir}; retry, or remove it if no command is running`);
       await new Promise((r) => setTimeout(r, 50));
     }

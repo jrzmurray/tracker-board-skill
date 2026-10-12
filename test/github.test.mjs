@@ -52,6 +52,7 @@ test("PR lifecycle badges are independent of phase status", () => {
   assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: true }), { status: "todo", label: "Draft" });
   assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: false }), { status: "active", label: "Open" });
   assert.deepEqual(prLifecycle({ state: "OPEN", mergeStateStatus: "CONFLICTING" }), { status: "blocked", label: "Conflicting" });
+  assert.deepEqual(prLifecycle({ state: "OPEN", mergeStateStatus: "DIRTY" }), { status: "blocked", label: "Conflicting" });
   assert.deepEqual(prLifecycle({ state: "MERGED", mergedAt: "2026-01-01" }), { status: "done", label: "Merged" });
   assert.deepEqual(prLifecycle({ state: "CLOSED", isDraft: false }), { status: "dropped", label: "Closed" });
   const b = board();

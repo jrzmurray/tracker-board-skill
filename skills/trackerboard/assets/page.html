@@ -77,6 +77,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .ptitle{display:block;color:var(--muted);font-size:13px;line-height:1.35}
 .lane{font:11px var(--mono);color:var(--muted);border:1px solid var(--rule);border-radius:3px;padding:0 5px;margin-left:6px;white-space:nowrap}
 .pill{display:inline-block;font:600 11px/1.6 var(--mono);letter-spacing:.03em;padding:1px 8px;border-radius:3px;white-space:nowrap}
+.pr-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.pr-badge{font-size:12px;padding:0 5px;border-radius:3px;white-space:nowrap}
 .snote{display:block;font-size:13px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
 .deps{font:12px var(--mono);overflow-wrap:anywhere}
 .deps a{text-decoration:none}
@@ -269,7 +271,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
         <div>${pill(phase.status)}${phase.note ? `<span class="snote">${inline(phase.note)}</span>` : ""}</div>
         <div class="deps">${deps}</div>
         ${hasIssues ? `<div class="prc">${phase.issue ? inline(/^\d+$/.test(String(phase.issue).trim()) ? "#" + String(phase.issue).trim() : phase.issue, "issues") : `<span style="color:var(--muted)">—</span>`}</div>` : ""}
-        <div class="prc">${phase.pr ? inline(phase.pr) : `<span style="color:var(--muted)">—</span>`}</div>
+        <div class="prc">${phase.pr ? inline(phase.pr) : `<span style="color:var(--muted)">—</span>`}${(b.prStates?.[phase.id] || []).length ? `<div class="pr-badges">${b.prStates[phase.id].map((pr) => `<span class="pr-badge status-${esc(pr.status)}" aria-label="Pull request ${esc(pr.number)}: ${esc(pr.label)}">${esc(pr.label)} ${inline("#" + pr.number)}</span>`).join("")}</div>` : ""}</div>
       </summary>
       <div class="body">${body}</div>
     </details>`;

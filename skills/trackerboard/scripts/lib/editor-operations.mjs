@@ -1,0 +1,216 @@
+import * as B from "./board.mjs";
+import * as S from "./store.mjs";
+
+const boardFields = new Set(B.BOARD_FIELDS);
+
+function requireObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new B.BoardError(`${label} must be an object`);
+  return value;
+}
+
+function requireFields(value, allowed, label) {
+  requireObject(value, label);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length) throw new B.BoardError(`${label} contains unknown field(s): ${unknown.join(", ")}`);
+}
+
+const same = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+
+function basePhase(board, id, wave) {
+  try { return B.locatePhase(board, id, wave); }
+  catch { return null; }
+}
+
+function changedInboundDependencies(base, current, phaseIds) {
+  const ids = new Set(phaseIds.map((id) => id.toLowerCase()));
+  const oldPhases = new Map(B.allPhases(base).map(({ phase }) => [phase.id.toLowerCase(), phase]));
+  for (const { phase } of B.allPhases(current)) {
+    if (ids.has(phase.id.toLowerCase())) continue;
+    const before = oldPhases.get(phase.id.toLowerCase());
+    for (const dependency of phase.deps) {
+      if (ids.has(dependency.toLowerCase()) && !before?.deps.some((item) => item.toLowerCase() === dependency.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+function rebaseCommand(command, base, current, conflict) {
+  const next = structuredClone(command);
+  switch (next.type) {
+    case "wave.create":
+      if (B.findWave(current, next.id)) throw conflict();
+      return next;
+    case "phase.create":
+      if (B.allPhases(current).some(({ phase }) => phase.id.toLowerCase() === next.id.toLowerCase())) throw conflict();
+      return next;
+    case "board.update":
+      next.fields = Object.fromEntries(Object.entries(next.fields).filter(([key, value]) => !same(String(base[key] ?? ""), String(value))));
+      return Object.keys(next.fields).length ? next : null;
+    case "wave.update": {
+      const oldWave = B.findWave(base, next.id), liveWave = B.findWave(current, next.id);
+      if (!oldWave || !liveWave) throw conflict();
+      next.fields = Object.fromEntries(Object.entries(next.fields || {}).filter(([key, value]) => !same(oldWave[key] ?? "", value)));
+      if (next.rename && next.rename.toLowerCase() === oldWave.id.toLowerCase()) delete next.rename;
+      if (!Object.keys(next.fields).length && !next.rename) return null;
+      return next;
+    }
+    case "phase.update": {
+      const old = basePhase(base, next.id, next.wave), live = basePhase(current, next.id, next.wave);
+      if (!old || !live) throw conflict();
+      next.fields = Object.fromEntries(Object.entries(next.fields || {}).filter(([key, value]) => !same(old.phase[key] ?? "", value)));
+      if (next.rename && next.rename.toLowerCase() === old.phase.id.toLowerCase()) delete next.rename;
+      if (next.toWave && next.toWave.toLowerCase() === old.wave.id.toLowerCase()) delete next.toWave;
+      if (!Object.keys(next.fields).length && !next.rename && !next.toWave) return null;
+      return next;
+    }
+    case "phase.delete": {
+      const old = basePhase(base, next.id, next.wave), live = basePhase(current, next.id, next.wave);
+      if (!old || !live || !same(old.phase, live.phase) || changedInboundDependencies(base, current, [old.phase.id])) throw conflict();
+      return next;
+    }
+    case "wave.delete": {
+      const old = B.findWave(base, next.id), live = B.findWave(current, next.id);
+      const phaseIds = old?.phases.map((phase) => phase.id) || [];
+      if (!old || !live || !same(old, live) || changedInboundDependencies(base, current, phaseIds)) throw conflict();
+      return next;
+    }
+    case "dependency.set": {
+      const old = basePhase(base, next.phase), live = basePhase(current, next.phase);
+      if (!old || !live) throw conflict();
+      if (same(old.phase.deps, next.deps)) return null;
+      if (!same(old.phase.deps, live.phase.deps)) throw conflict();
+      return next;
+    }
+    default:
+      return next;
+  }
+}
+
+export function createEditorCallbacks({ boardName, revisionConflict }) {
+  let remoteSnapshot = null;
+  let remoteSnapshotAt = 0;
+  let remoteRead = null;
+  const remoteBases = new Map();
+
+  function rememberRemote(snapshot) {
+    if (snapshot.revision != null) {
+      remoteBases.set(snapshot.revision, structuredClone(snapshot.board));
+      while (remoteBases.size > 20) remoteBases.delete(remoteBases.keys().next().value);
+    }
+  }
+
+  function remote() {
+    return S.backendConfig(boardName).backend === "github";
+  }
+
+  function loadSnapshot() {
+    if (remote()) {
+      if (remoteSnapshot && Date.now() - remoteSnapshotAt < 60000) return structuredClone(remoteSnapshot);
+      if (remoteRead) return structuredClone(remoteRead);
+    }
+    const board = S.loadBoard(boardName);
+    const snapshot = { board, revision: S.getRevision(boardName) };
+    if (remote()) {
+      remoteRead = snapshot;
+      remoteSnapshot = snapshot;
+      remoteSnapshotAt = Date.now();
+      rememberRemote(snapshot);
+      queueMicrotask(() => { remoteRead = null; });
+    }
+    return structuredClone(snapshot);
+  }
+
+  async function applyCommand(command, expectedRevision) {
+    return S.withLock(() => {
+      const isRemote = remote();
+      const before = S.loadBoard(boardName);
+      const revision = S.getRevision(boardName);
+      if (!isRemote && expectedRevision != null && revision != null && expectedRevision !== revision) {
+        throw revisionConflict();
+      }
+      const baseline = isRemote && expectedRevision != null ? remoteBases.get(expectedRevision) : before;
+      if (isRemote && expectedRevision != null && !baseline && revision !== expectedRevision) throw revisionConflict();
+      const board = structuredClone(before);
+      requireObject(command, "command");
+      const args = isRemote ? rebaseCommand(command, baseline || before, before, revisionConflict) : command;
+      if (!args) return { board: before, revision };
+      try {
+        switch (args.type) {
+        case "board.update":
+          requireFields(args.fields, boardFields, "board.update fields");
+          for (const [key, value] of Object.entries(args.fields)) board[key] = String(value);
+          break;
+        case "wave.create":
+          requireFields(args, new Set(["type", "id", "fields", "after"]), "wave.create");
+          B.insertWave(board, args.id, args.fields || {}, { after: args.after });
+          break;
+        case "wave.update":
+          requireFields(args, new Set(["type", "id", "fields", "rename"]), "wave.update");
+          B.updateWave(board, args.id, args.fields || {}, { rename: args.rename });
+          break;
+        case "wave.delete":
+          requireFields(args, new Set(["type", "id", "force"]), "wave.delete");
+          B.deleteWave(board, args.id, { force: args.force });
+          break;
+        case "phase.create":
+          requireFields(args, new Set(["type", "id", "wave", "fields"]), "phase.create");
+          B.insertPhase(board, args.id, args.fields || {}, { wave: args.wave });
+          break;
+        case "phase.update":
+          requireFields(args, new Set(["type", "id", "wave", "fields", "rename", "toWave"]), "phase.update");
+          B.updatePhase(board, args.id, args.fields || {}, { wave: args.wave, rename: args.rename, toWave: args.toWave });
+          break;
+        case "phase.delete":
+          requireFields(args, new Set(["type", "id", "wave"]), "phase.delete");
+          B.deletePhase(board, args.id, args.wave);
+          break;
+        case "dependency.set":
+          requireFields(args, new Set(["type", "phase", "deps"]), "dependency.set");
+          B.setDeps(board, args.phase, args.deps || []);
+          break;
+        case "dependency.add":
+          requireFields(args, new Set(["type", "phase", "deps"]), "dependency.add");
+          B.addDeps(board, args.phase, args.deps || []);
+          break;
+        case "dependency.remove":
+          requireFields(args, new Set(["type", "phase", "deps"]), "dependency.remove");
+          B.removeDeps(board, args.phase, args.deps || []);
+          break;
+        case "dependency.clear":
+          requireFields(args, new Set(["type", "phase"]), "dependency.clear");
+          B.setDeps(board, args.phase, []);
+          break;
+        case "log.append":
+          requireFields(args, new Set(["type", "text"]), "log.append");
+          if (typeof args.text !== "string" || !args.text.trim()) throw new B.BoardError("log.append needs non-empty text");
+          B.appendLog(board, args.text);
+          break;
+          default:
+            throw new B.BoardError(`unsupported editor command ${JSON.stringify(args.type)}`);
+        }
+        B.validate(board);
+      } catch (error) {
+        if (error instanceof B.BoardError) error.status = 422;
+        throw error;
+      }
+      let nextRevision;
+      try {
+        nextRevision = S.saveBoard(board, { previous: baseline || before, expectedRevision });
+      } catch (error) {
+        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") throw revisionConflict();
+        throw error;
+      }
+      remoteSnapshot = null;
+      remoteRead = null;
+      const result = { board, revision: nextRevision };
+      if (remote()) {
+        remoteSnapshot = result;
+        remoteSnapshotAt = Date.now();
+        rememberRemote(result);
+      }
+      return structuredClone(result);
+    });
+  }
+
+  return { loadSnapshot, applyCommand };
+}

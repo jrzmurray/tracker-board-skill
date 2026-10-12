@@ -242,6 +242,95 @@ test("rebases independent dependency-set edits and preserves both writers' delta
   assert.deepEqual(backend.load().waves[0].phases.find((phase) => phase.id === "P1").deps, ["P4", "P3"]);
 });
 
+test("rebases independent board-field edits without reverting the first writer", () => {
+  const { backend, mock, context } = harness();
+  backend.create(makeBoard());
+  const writerABase = backend.load();
+  const writerARevision = backend.revision();
+  let secondContext;
+  secondContext = {
+    ...context,
+    local: structuredClone(context.local),
+    saveLocal(value) { secondContext.local = structuredClone(value); },
+  };
+  const secondWriter = createGitHubProjectBackend(secondContext, mock);
+  const writerBBase = secondWriter.load();
+  const writerBRevision = secondWriter.revision();
+
+  const writerA = structuredClone(writerABase);
+  writerA.notes = "notes from writer A";
+  backend.save(writerA, { previous: writerABase, expectedRevision: writerARevision });
+
+  const writerB = structuredClone(writerBBase);
+  writerB.title = "Title from writer B";
+  secondWriter.save(writerB, { previous: writerBBase, expectedRevision: writerBRevision });
+
+  const finalBoard = backend.load();
+  assert.equal(finalBoard.title, "Title from writer B");
+  assert.equal(finalBoard.notes, "notes from writer A");
+});
+
+test("recomputes README metadata after a remote board edit observed before mutation", () => {
+  const { backend, mock } = harness();
+  backend.create(makeBoard());
+  const previous = backend.load();
+  const expectedRevision = backend.revision();
+  const desired = structuredClone(previous);
+  desired.notes = "local notes update";
+  const originalRun = mock.run.bind(mock);
+  let projectViews = 0;
+  let injected = false;
+  mock.run = (args, options) => {
+    if (args[0] === "project" && args[1] === "view" && ++projectViews === 5) {
+      const project = [...mock.projects.values()][0];
+      const metadata = metadataOf(project);
+      metadata.fields.title = "Remote title update";
+      const marker = `<!-- trackerboard:metadata:v1:${Buffer.from(JSON.stringify(metadata)).toString("base64")} -->`;
+      project.readme = project.readme.replace(/<!-- trackerboard:metadata:v1:[A-Za-z0-9+/=]+ -->/, marker);
+      injected = true;
+    }
+    return originalRun(args, options);
+  };
+
+  backend.save(desired, { previous, expectedRevision });
+
+  assert.equal(injected, true);
+  assert.equal(backend.load().title, "Remote title update");
+  assert.equal(backend.load().notes, "local notes update");
+});
+
+test("recomputes phase field values after an independent remote edit is observed mid-save", () => {
+  const { backend, mock } = harness();
+  backend.create(makeBoard());
+  const previous = backend.load();
+  const expectedRevision = backend.revision();
+  const desired = structuredClone(previous);
+  desired.waves[0].phases[0].notes = "local phase notes update";
+  const originalRun = mock.run.bind(mock);
+  let armed = false;
+  let itemListsAfterManifest = 0;
+  let injected = false;
+  mock.run = (args, options) => {
+    if (armed && !injected && args[0] === "project" && args[1] === "item-list") {
+      itemListsAfterManifest += 1;
+      if (itemListsAfterManifest === 3) {
+        mock.mutateField("P1", "Status", "blocked");
+        injected = true;
+      }
+    }
+    const result = originalRun(args, options);
+    if (args[0] === "project" && args[1] === "edit" && args.includes("--readme")) armed = true;
+    return result;
+  };
+
+  backend.save(desired, { previous, expectedRevision });
+
+  assert.equal(injected, true);
+  const saved = backend.load();
+  assert.equal(saved.waves[0].phases[0].status, "blocked");
+  assert.equal(saved.waves[0].phases[0].notes, "local phase notes update");
+});
+
 test("expected-revision mismatch without a baseline is tagged for conflict handling", () => {
   const { backend } = harness();
   backend.create(makeBoard());
@@ -285,6 +374,34 @@ test("reconciles a lost draft-item delete response from the README pending-delet
   assert.equal([...mock.projects.values()][0].items.length, 1);
   assert.deepEqual(backend.load(), desired);
   assert.deepEqual(metadataOf([...mock.projects.values()][0]).pendingDelete, []);
+});
+
+test("re-adding a phase cancels its pending deletion after an interrupted delete", () => {
+  const mock = new MockGitHub({ failBeforeItemDelete: true });
+  const { backend } = harness(mock);
+  const original = makeBoard([
+    { id: "P1", title: "Keep" },
+    { id: "P2", title: "Can return", deps: [] },
+  ]);
+  backend.create(original);
+  const previous = backend.load();
+  const expectedRevision = backend.revision();
+  const removing = structuredClone(previous);
+  removing.waves[0].phases.pop();
+  assert.throws(() => backend.save(removing, { previous, expectedRevision }), /item-delete failed/);
+
+  const project = [...mock.projects.values()][0];
+  const retainedItemId = project.items.find((item) => fieldValue(item, "Trackerboard ID")?.text === "P2").id;
+  assert.deepEqual(metadataOf(project).pendingDelete, [{ id: "P2", itemId: retainedItemId }]);
+  const deletionSnapshot = backend.load();
+  const readded = structuredClone(deletionSnapshot);
+  readded.waves[0].phases.push(structuredClone(original.waves[0].phases[1]));
+
+  backend.save(readded, { previous: deletionSnapshot, expectedRevision: backend.revision() });
+
+  assert.deepEqual(backend.load(), readded);
+  assert.equal(project.items.find((item) => item.id === retainedItemId)?.id, retainedItemId);
+  assert.deepEqual(metadataOf(project).pendingDelete, []);
 });
 
 test("remove deletes the private Project and draft items without repository Issue create or close calls", () => {

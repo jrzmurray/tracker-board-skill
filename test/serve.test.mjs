@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { EditorRevisionConflict, startEditorServer } from "../skills/trackerboard/scripts/lib/serve.mjs";
 
@@ -184,4 +187,17 @@ test("snapshot polling reveals a board update made outside this server", async (
   assert.equal(polled.revision, 2);
   assert.equal(polled.board.title, "Changed by trackerboard CLI");
   assert.match(page, /setInterval\(refreshSnapshot,\s*2_000\)/);
+});
+
+test("editor saves retain edits in other forms while rebasing them onto the new snapshot", () => {
+  const editorPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../skills/trackerboard/assets/editor.html");
+  const html = fs.readFileSync(editorPath, "utf8");
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script, "editor client script exists");
+  assert.doesNotThrow(() => new Function(script), "editor client script parses");
+  assert.match(script, /function captureDrafts\(exceptForm, command\)/);
+  assert.match(script, /function restoreDrafts\(drafts\)/);
+  assert.match(script, /renderBoard\(snapshot\.board, drafts\)/);
+  assert.match(script, /dataset\.initialValue/);
+  assert.match(script, /Other unsaved edits are still here/);
 });

@@ -42,6 +42,7 @@ export class MockGitHub {
     failAfterDraftCreate = false,
     failAfterProjectCreate = false,
     failAfterItemDelete = false,
+    failBeforeItemDelete = false,
     authScopes = ["repo", "project"],
     projectListFailure = false,
   } = {}) {
@@ -54,6 +55,7 @@ export class MockGitHub {
     this.failAfterDraftCreate = failAfterDraftCreate;
     this.failAfterProjectCreate = failAfterProjectCreate;
     this.failAfterItemDelete = failAfterItemDelete;
+    this.failBeforeItemDelete = failBeforeItemDelete;
     this.authScopes = authScopes;
     this.projectListFailure = projectListFailure;
   }
@@ -174,6 +176,10 @@ export class MockGitHub {
     if (root === "project" && command === "item-delete") {
       const project = this.project(tail);
       const id = this.flag(tail, "--id");
+      if (this.failBeforeItemDelete) {
+        this.failBeforeItemDelete = false;
+        throw new Error("simulated interruption before item-delete");
+      }
       project.items = project.items.filter((item) => item.id !== id);
       if (this.failAfterItemDelete) {
         this.failAfterItemDelete = false;

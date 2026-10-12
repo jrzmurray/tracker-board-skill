@@ -54,3 +54,30 @@ test("JSON remains the default backend and checks expected revisions", async () 
   assert.ok(fs.existsSync(path.join(root, "legacy-home", "boards", "default-json.json")));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("changing backend defaults does not reinterpret an existing legacy JSON board", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-legacy-default-"));
+  const oldHome = process.env.TRACKERBOARD_HOME;
+  const oldDataHome = process.env.TRACKERBOARD_DATA_HOME;
+  t.after(() => {
+    if (oldHome === undefined) delete process.env.TRACKERBOARD_HOME;
+    else process.env.TRACKERBOARD_HOME = oldHome;
+    if (oldDataHome === undefined) delete process.env.TRACKERBOARD_DATA_HOME;
+    else process.env.TRACKERBOARD_DATA_HOME = oldDataHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  process.env.TRACKERBOARD_HOME = path.join(root, "legacy-home");
+  process.env.TRACKERBOARD_DATA_HOME = path.join(root, "data");
+  const S = await import(`../skills/trackerboard/scripts/lib/store.mjs?legacy-test=${Date.now()}`);
+  await S.initializeBackends();
+  S.createBoard("legacy-json", { title: "Original source" });
+
+  const local = S.loadLocal("legacy-json");
+  delete local.backendOverride;
+  S.saveLocal("legacy-json", local);
+  fs.mkdirSync(process.env.TRACKERBOARD_DATA_HOME, { recursive: true });
+  fs.writeFileSync(path.join(process.env.TRACKERBOARD_DATA_HOME, "config.json"), JSON.stringify({ backend: "github" }));
+
+  assert.equal(S.backendConfig("legacy-json").backend, "json");
+  assert.equal(S.loadBoard("legacy-json").title, "Original source");
+});

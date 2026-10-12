@@ -1,9 +1,15 @@
 import { BoardError } from "./board.mjs";
 
-// Adapters are registered by their module and share this synchronous contract
-// after initializeBackends() has completed. `revision` is an opaque token:
-// JSON/SQLite use monotonic integers; remote backends may use a best-effort
-// token or null when the service has no compare-and-swap primitive.
+// Adapters register as a module side effect. initialize() is the one-time
+// process setup hook (for example, loading sql.js); open() is then synchronous
+// and returns a synchronous CRUD adapter. Its context is:
+// {name, bindingKey, config, cwd, repoRoot, repoUrl, local, saveLocal,
+//  boardPath, dataHome}. The adapter methods are load() -> canonical board,
+// create(board), save(board, {previous, expectedRevision}) -> revision,
+// revision() -> opaque token, and remove(). `revision` is monotonic for local
+// backends; a remote backend can provide a best-effort token or null if its
+// service offers no compare-and-swap. Remote saves reread and reconcile before
+// applying narrow mutations; they never replace the whole board blindly.
 const factories = new Map();
 const initialized = new Set();
 

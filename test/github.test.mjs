@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as B from "../skills/trackerboard/scripts/lib/board.mjs";
-import { applyGithub, idPattern } from "../skills/trackerboard/scripts/lib/github.mjs";
+import { applyGithub, derivePrStates, idPattern, prLifecycle } from "../skills/trackerboard/scripts/lib/github.mjs";
 
 test("ids match as whole tokens, not inside longer ids or sub-ids", () => {
   const re = idPattern("R-SEC-056");
@@ -25,7 +25,7 @@ function board() {
 }
 const phase = (b, id) => B.locatePhase(b, id).phase;
 
-test("open PRs fill pr/issue and move status forward only", () => {
+test("GitHub references fill pr/issue without changing human-controlled status", () => {
   const b = board();
   const changes = applyGithub(b, {
     prs: [
@@ -37,15 +37,33 @@ test("open PRs fill pr/issue and move status forward only", () => {
     ],
     issues: [{ number: 8, title: "R-A-005 tracking issue" }],
   });
-  assert.deepEqual(phase(b, "R-A-001"), { ...phase(b, "R-A-001"), pr: "#10, #14", issue: "#7", status: "review" });
+  assert.deepEqual(phase(b, "R-A-001"), { ...phase(b, "R-A-001"), pr: "#10, #14", issue: "#7", status: "todo" });
   assert.equal(phase(b, "R-A-002").pr, "#5 merged, #11");
-  assert.equal(phase(b, "R-A-002").status, "review"); // a draft never moves review back
+  assert.equal(phase(b, "R-A-002").status, "review");
   assert.equal(phase(b, "R-A-003").status, "blocked");
   assert.equal(phase(b, "R-A-004").status, "done");
-  assert.deepEqual([phase(b, "R-A-005").pr, phase(b, "R-A-005").issue, phase(b, "R-A-005").status], ["#13", "#8", "review"]);
-  assert.deepEqual(changes.find((c) => c.id === "R-A-001").status, ["todo", "review"]);
+  assert.deepEqual([phase(b, "R-A-005").pr, phase(b, "R-A-005").issue, phase(b, "R-A-005").status], ["#13", "#8", "todo"]);
+  assert.deepEqual(changes.find((c) => c.id === "R-A-001"), { id: "R-A-001", pr: "#10, #14", issue: "#7" });
   // Running again changes nothing.
   assert.deepEqual(applyGithub(b, { prs: [{ number: 10, title: "R-A-001", isDraft: true }] }), []);
+});
+
+test("PR lifecycle badges are independent of phase status", () => {
+  assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: true }), { status: "todo", label: "Draft" });
+  assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: false }), { status: "active", label: "Open" });
+  assert.deepEqual(prLifecycle({ state: "OPEN", mergeStateStatus: "CONFLICTING" }), { status: "blocked", label: "Conflicting" });
+  assert.deepEqual(prLifecycle({ state: "MERGED", mergedAt: "2026-01-01" }), { status: "done", label: "Merged" });
+  assert.deepEqual(prLifecycle({ state: "CLOSED", isDraft: false }), { status: "dropped", label: "Closed" });
+  const b = board();
+  phase(b, "R-A-001").pr = "#10";
+  phase(b, "R-A-002").pr = "#5";
+  const states = derivePrStates(b, [
+    { number: 5, state: "MERGED", mergedAt: "2026-01-01" },
+    { number: 10, state: "OPEN", isDraft: true },
+  ]);
+  assert.deepEqual(states["R-A-001"], [{ number: "10", status: "todo", label: "Draft" }]);
+  assert.equal(states["R-A-002"][0].status, "done");
+  assert.equal(phase(b, "R-A-001").status, "todo");
 });
 
 test("body is only searched when asked", () => {

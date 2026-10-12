@@ -1,16 +1,11 @@
-// Overlay open GitHub work onto a board: a PR or issue that mentions a phase
-// id fills that phase's PR and Issue columns, and an open PR moves the phase
-// forward (draft -> active, ready -> review). Nothing moves backward and
-// nothing is removed, so it is safe to run on every refresh. No I/O here; the
-// CLI fetches with `gh` and passes the lists in.
+// Overlay GitHub references onto a board. PR lifecycle never changes the
+// human-controlled phase status; the page derives independent PR badges.
+// Nothing is removed, so this remains safe to run on every refresh.
 
 import { allPhases } from "./board.mjs";
 
 export const SOURCES = ["title", "branch", "labels", "body"];
 export const DEFAULT_SOURCES = ["title", "branch", "labels"];
-
-// Statuses an open PR may advance, and how far along each is.
-const RANK = { todo: 0, waiting: 0, active: 1, review: 2 };
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -38,16 +33,17 @@ const addRefs = (field, nums) => {
   return [field.trim(), add.join(", ")].filter(Boolean).join(", ");
 };
 
-// prs: [{number, title, body, headRefName, labels, isDraft, closingIssuesReferences: [{number}]}]
+// prs: [{number, title, body, headRefName, labels, isDraft, state, mergedAt,
+//        mergeStateStatus, closingIssuesReferences: [{number}]}]
 // issues: [{number, title, body, labels}]
-// Returns the changes made, one per phase: {id, pr?, issue?, status?: [from, to]}.
+// Returns reference changes made, one per phase: {id, pr?, issue?}.
 export function applyGithub(board, { prs = [], issues = [] }, { sources = DEFAULT_SOURCES } = {}) {
   const phases = allPhases(board).map(({ phase }) => ({ phase, re: idPattern(phase.id) }));
   const mentions = (item) => phases.filter(({ re }) => texts(item, sources).some((t) => re.test(t))).map(({ phase }) => phase);
 
-  const hits = new Map(); // phase -> {prs: Map(number -> isDraft), issues: Set}
+  const hits = new Map(); // phase -> {prs: Set(number), issues: Set}
   const hit = (p) => {
-    if (!hits.has(p)) hits.set(p, { prs: new Map(), issues: new Set() });
+    if (!hits.has(p)) hits.set(p, { prs: new Set(), issues: new Set() });
     return hits.get(p);
   };
   const issuePhases = new Map(); // issue number -> phases that mention it
@@ -64,7 +60,7 @@ export function applyGithub(board, { prs = [], issues = [] }, { sources = DEFAUL
     const direct = mentions(pr);
     const viaIssue = closes.flatMap((n) => issuePhases.get(n) || []);
     for (const p of new Set([...direct, ...viaIssue])) {
-      hit(p).prs.set(pr.number, !!pr.isDraft);
+      hit(p).prs.add(pr.number);
       if (direct.includes(p)) for (const n of closes) hit(p).issues.add(n);
     }
   }
@@ -73,22 +69,39 @@ export function applyGithub(board, { prs = [], issues = [] }, { sources = DEFAUL
   for (const [p, h] of hits) {
     const change = { id: p.id };
     const sortNum = (a, b) => a - b;
-    const pr = addRefs(p.pr || "", [...h.prs.keys()].sort(sortNum));
+    const pr = addRefs(p.pr || "", [...h.prs].sort(sortNum));
     if (pr !== (p.pr || "")) { change.pr = pr; p.pr = pr; }
     const issue = addRefs(p.issue || "", [...h.issues].sort(sortNum));
     if (issue !== (p.issue || "")) { change.issue = issue; p.issue = issue; }
-    if (h.prs.size && p.status in RANK) {
-      const to = [...h.prs.values()].some((draft) => !draft) ? "review" : "active";
-      if (RANK[to] > RANK[p.status]) { change.status = [p.status, to]; p.status = to; }
-    }
     if (Object.keys(change).length > 1) changes.push(change);
   }
   return changes;
 }
 
+export function prLifecycle(pr) {
+  const state = String(pr.state || (pr.mergedAt ? "MERGED" : "OPEN")).toUpperCase();
+  if (pr.mergedAt || state === "MERGED") return { status: "done", label: "Merged" };
+  if (state === "CLOSED") return { status: "dropped", label: "Closed" };
+  if (String(pr.mergeStateStatus || "").toUpperCase() === "CONFLICTING") {
+    return { status: "blocked", label: "Conflicting" };
+  }
+  if (pr.isDraft) return { status: "todo", label: "Draft" };
+  return { status: "active", label: "Open" };
+}
+
+export function derivePrStates(board, prs = []) {
+  const byNumber = new Map(prs.map((pr) => [String(pr.number), prLifecycle(pr)]));
+  const out = {};
+  for (const { phase } of allPhases(board)) {
+    const numbers = refs(phase.pr || "");
+    const states = numbers.map((number) => ({ number, ...(byNumber.get(number) || { status: "unknown", label: "Unknown" }) }));
+    if (states.length) out[phase.id] = states;
+  }
+  return out;
+}
+
 export function describeChange(c) {
   const parts = [];
-  if (c.status) parts.push(`${c.status[0]} → ${c.status[1]}`);
   if (c.pr) parts.push(`pr ${c.pr}`);
   if (c.issue) parts.push(`issue ${c.issue}`);
   return `${c.id}: ${parts.join(", ")}`;

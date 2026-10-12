@@ -69,8 +69,8 @@ Generated boards (the input format is board.schema.json)
                           changes, adds and removals. --keep: phase fields the board keeps.
   github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE]
                           Find phase ids in open PRs and issues: fill --pr and --issue,
-                          and move todo/waiting -> active (draft PR) or review (ready PR).
-                          Never moves a phase back. --repo defaults to the board's repo URL.
+                          without changing the human-controlled phase status. PR lifecycle
+                          badges are derived separately. --repo defaults to the board's repo URL.
                           --file: update a board JSON file instead (run it before
                           import --replace so the overlay is not undone by each import).
 `;
@@ -679,17 +679,17 @@ const commands = {
     for (const s of sources) if (!G.SOURCES.includes(s)) throw new B.BoardError(`--in: unknown source "${s}"; sources: ${G.SOURCES.join(", ")}`);
     const repo = opts.repo || (board.repoUrl.match(/github\.com[/:]([^/]+\/[^/#?]+?)(?:\.git)?\/?$/) || [])[1] || null;
     const limit = String(opts.limit || 1000);
-    const gh = (args) => {
-      const r = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...(repo ? ["--repo", repo] : []), "--state", "open", "--limit", limit], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    const gh = (args, state = "open") => {
+      const r = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...(repo ? ["--repo", repo] : []), "--state", state, "--limit", limit], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
       if (r.error) throw new B.BoardError(`cannot run gh (${r.error.code === "ENOENT" ? "not installed" : r.error.message}); install the GitHub CLI and run \`gh auth login\``);
       if (r.status !== 0) throw new B.BoardError(`gh ${args.slice(0, 2).join(" ")} failed: ${r.stderr.trim()}`);
       return JSON.parse(r.stdout || "[]");
     };
     const fields = ["number", "title", "labels", ...(sources.includes("body") ? ["body"] : [])];
-    const prs = gh(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "closingIssuesReferences"].join(",")]);
+    const prs = gh(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "state", "mergedAt", "mergeStateStatus", "closingIssuesReferences"].join(",")], "all");
     const issues = gh(["issue", "list", "--json", fields.join(",")]);
     const changes = G.applyGithub(board, { prs, issues }, { sources });
-    const scanned = `${prs.length} open PRs and ${issues.length} open issues${repo ? ` in ${repo}` : ""}`;
+    const scanned = `${prs.length} PRs and ${issues.length} open issues${repo ? ` in ${repo}` : ""}`;
     if (!changes.length) return out(`ok: no changes from ${scanned}`);
     for (const c of changes) out(`  ${G.describeChange(c)}`);
     if (opts["dry-run"]) return out(`dry run: ${changes.length} phase(s) would change from ${scanned}`);
@@ -698,10 +698,9 @@ const commands = {
       return out(`ok: ${changes.length} phase(s) in ${opts.file} updated from ${scanned}`);
     }
     if (!opts.log) {
-      const moved = changes.filter((c) => c.status).map((c) => `${c.id} ${c.status[1]}`);
-      B.appendLog(board, `github: ${changes.length} phase(s) updated from open PRs/issues${moved.length ? ` (${moved.slice(0, 8).join(", ")}${moved.length > 8 ? ", …" : ""})` : ""}`);
+      B.appendLog(board, `github: ${changes.length} phase(s) linked from PRs/issues`);
     }
-    await commit(board, opts, `${changes.length} phase(s) updated from ${scanned}`);
+    await commit(board, opts, `${changes.length} phase(s) linked from ${scanned}`);
   },
 
   async render({ opts }) {

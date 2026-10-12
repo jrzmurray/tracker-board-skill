@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { BoardError, newBoard, validate } from "./board.mjs";
+import { resolveConfig } from "./config.mjs";
 
 export function home() {
   return process.env.TRACKERBOARD_HOME || path.join(os.homedir(), ".trackerboard");
@@ -57,29 +58,68 @@ export function listBoards() {
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  return files.filter((f) => f.endsWith(".json") && !f.endsWith(".local.json")).map((f) => f.slice(0, -5)).sort();
+  const names = new Set(files.filter((f) => f.endsWith(".json") && !f.endsWith(".local.json")).map((f) => f.slice(0, -5)));
+  for (const f of files.filter((f) => f.endsWith(".local.json"))) names.add(f.slice(0, -11));
+  return [...names].sort();
 }
 
 export function boardExists(name) {
-  return fs.existsSync(boardPath(checkName(name)));
+  const checked = checkName(name);
+  return fs.existsSync(boardPath(checked)) || fs.existsSync(localPath(checked));
+}
+
+export function repositoryBindingKey(name, cwd) {
+  const ctx = context(cwd);
+  if (ctx.kind === "git") return bindingKey(ctx.root, null);
+  const local = loadLocal(name);
+  const matching = (local.bindings || []).find((b) => matches(b, ctx));
+  return matching?.key || (local.bindings || [])[0]?.key || bindingKey(ctx.root, null);
+}
+
+export function backendConfig(name, cwd) {
+  const checked = checkName(name);
+  const key = repositoryBindingKey(checked, cwd);
+  const local = loadLocal(checked);
+  const config = resolveConfig({ bindingKey: key, boardOverride: local.backendOverride || {} });
+  if (!new Set(["json", "sqlite", "github"]).has(config.backend)) {
+    throw new BoardError(`unknown backend ${JSON.stringify(config.backend)} for board ${checked}; expected json, sqlite, or github`);
+  }
+  return { ...config, bindingKey: key };
+}
+
+export function getRevision(name) {
+  const local = loadLocal(name);
+  return Number.isSafeInteger(local.revision) && local.revision >= 0 ? local.revision : 0;
 }
 
 export function loadBoard(name) {
-  if (!boardExists(name)) throw new BoardError(`board "${name}" not found; boards: ${listBoards().join(", ") || "(none)"}`);
-  return readJson(boardPath(name));
+  const checked = checkName(name);
+  if (!boardExists(checked)) throw new BoardError(`board "${checked}" not found; boards: ${listBoards().join(", ") || "(none)"}`);
+  const config = backendConfig(checked);
+  if (config.backend !== "json") throw new BoardError(`the ${config.backend} backend is configured for ${checked}, but its adapter is not initialized`);
+  return readJson(boardPath(checked));
 }
 
-export function saveBoard(board) {
+export function saveBoard(board, { expectedRevision } = {}) {
   validate(board);
+  const name = checkName(board.name);
+  const config = backendConfig(name);
+  if (config.backend !== "json") throw new BoardError(`the ${config.backend} backend is configured for ${name}, but its adapter is not initialized`);
+  const revision = getRevision(name);
+  if (expectedRevision != null && expectedRevision !== revision) {
+    throw new BoardError(`board ${name} changed (expected revision ${expectedRevision}, current ${revision}); reload and retry`);
+  }
   board.updatedAt = new Date().toISOString();
-  writeJson(boardPath(checkName(board.name)), board);
+  writeJson(boardPath(name), board);
+  saveLocal(name, { ...loadLocal(name), revision: revision + 1 });
+  return revision + 1;
 }
 
 export function createBoard(name, opts) {
   if (boardExists(name)) throw new BoardError(`board "${name}" already exists`);
   const board = newBoard(name, opts);
+  saveLocal(name, { bindings: [], artifactUrl: "", dbVersion: null, revision: 0, backendOverride: {} });
   saveBoard(board);
-  saveLocal(name, { bindings: [], artifactUrl: "", dbVersion: null });
   return board;
 }
 

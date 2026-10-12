@@ -725,6 +725,7 @@ async function main(argv) {
   if (!fn) throw new B.BoardError(`unknown command "${cmd}"; run trackerboard help`);
   const args = parseArgs(rest);
   if (args.opts.help) return commands.help();
+  await S.initializeBackends();
   // Commands that change state run under the lock. Reads skip it: every
   // write replaces its file atomically, so a read never sees half of one.
   const dep = args.pos[0];

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { initializeBackendFactories, openBackend, registerBackendFactory } from "../skills/trackerboard/scripts/lib/backend.mjs";
 
@@ -32,4 +35,22 @@ test("backend factory initializes once and exposes the synchronous CRUD contract
   assert.equal(backend.save({ name: "sample", title: "updated" }, { expectedRevision: 0 }), 1);
   assert.equal(backend.revision(), 1);
   assert.throws(() => backend.save({}, { expectedRevision: 0 }), /revision conflict/);
+});
+
+test("JSON remains the default backend and checks expected revisions", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-json-"));
+  process.env.TRACKERBOARD_HOME = path.join(root, "legacy-home");
+  process.env.TRACKERBOARD_DATA_HOME = path.join(root, "data");
+  const S = await import(`../skills/trackerboard/scripts/lib/store.mjs?test=${Date.now()}`);
+  await S.initializeBackends();
+  const board = S.createBoard("default-json", { title: "Default" });
+  assert.equal(S.backendConfig("default-json").backend, "json");
+  assert.equal(S.getRevision("default-json"), 1);
+  const loaded = S.loadBoard(board.name);
+  loaded.title = "Updated";
+  assert.equal(S.saveBoard(loaded, { expectedRevision: 1 }), 2);
+  assert.equal(S.loadBoard(board.name).title, "Updated");
+  assert.throws(() => S.saveBoard({ ...loaded, title: "Stale" }, { expectedRevision: 1 }), /expected revision 1, current 2/);
+  assert.ok(fs.existsSync(path.join(root, "legacy-home", "boards", "default-json.json")));
+  fs.rmSync(root, { recursive: true, force: true });
 });

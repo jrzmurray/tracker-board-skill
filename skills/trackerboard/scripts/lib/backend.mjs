@@ -3,7 +3,7 @@ import { BoardError } from "./board.mjs";
 // Adapters register as a module side effect. initialize() is the one-time
 // process setup hook (for example, loading sql.js); open() is then synchronous
 // and returns a synchronous CRUD adapter. Its context is:
-// {name, bindingKey, config, cwd, repoRoot, repoUrl, local, saveLocal,
+// {name, bindingKey, config, cwd, repoRoot, repoUrl, local, loadLocal, saveLocal,
 //  boardPath, dataHome}. The adapter methods are load() -> canonical board,
 // create(board), save(board, {previous, expectedRevision}) -> revision,
 // revision() -> opaque token, and remove(). `revision` is monotonic for local

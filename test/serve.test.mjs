@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { test } from "node:test";
+import { EditorRevisionConflict, startEditorServer } from "../skills/trackerboard/scripts/lib/serve.mjs";
+
+function fixture() {
+  return { board: { schema: 1, name: "demo", title: "Before", waves: [], log: [] }, revision: 1 };
+}
+
+async function start(t, overrides = {}) {
+  let current = fixture();
+  let calls = 0;
+  const server = await startEditorServer({
+    boardName: "demo",
+    port: 0,
+    loadSnapshot: async () => structuredClone(current),
+    applyCommand: async (command, expectedRevision) => {
+      calls++;
+      if (!Object.is(expectedRevision, current.revision)) throw new EditorRevisionConflict();
+      if (command.type === "board.update") current.board.title = command.fields.title;
+      current.revision++;
+      return structuredClone(current);
+    },
+    ...overrides,
+  });
+  t.after(() => server.close());
+  return {
+    server,
+    get current() { return current; },
+    set current(value) { current = value; },
+    get calls() { return calls; },
+  };
+}
+
+const json = (response) => response.json();
+
+async function post(server, body, headers = {}) {
+  return fetch(`${server.url}/api/command`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${server.token}`,
+      Origin: server.origin,
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function postWithHost(server, body, host) {
+  const target = new URL(`${server.url}/api/command`);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: target.hostname,
+      port: Number(target.port),
+      path: target.pathname,
+      method: "POST",
+      headers: {
+        Host: host,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${server.token}`,
+        Origin: server.origin,
+      },
+    }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode));
+    });
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
+  });
+}
+
+test("editor binds only to IPv4 loopback and serves its capability URL", async (t) => {
+  const { server } = await start(t);
+  assert.deepEqual(server.server.address().address, "127.0.0.1");
+  assert.equal(new URL(server.url).hostname, "127.0.0.1");
+  assert.match(server.token, /^[A-Za-z0-9_-]{40,}$/);
+  const page = await fetch(server.url);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-security-policy"), /connect-src 'self'/);
+  assert.match(await page.text(), /Trackerboard · local editor/);
+  assert.equal((await fetch(`${server.origin}/not-the-capability`)).status, 404);
+  assert.equal((await fetch(`${server.url}/api/snapshot`)).status, 200);
+});
+
+test("writes require capability bearer, exact origin, and the bound Host", async (t) => {
+  const state = await start(t);
+  const { server } = state;
+  const body = { expectedRevision: 1, command: { type: "board.update", fields: { title: "After" } } };
+
+  assert.equal((await post(server, body, { Authorization: "Bearer wrong" })).status, 401);
+  assert.equal((await post(server, body, { Origin: "http://localhost" })).status, 403);
+  assert.equal(await postWithHost(server, body, "example.com"), 421);
+  assert.equal(state.calls, 0);
+
+  const response = await post(server, body);
+  assert.equal(response.status, 200);
+  assert.equal((await json(response)).board.title, "After");
+  assert.equal(state.calls, 1);
+});
+
+test("command and field validation happens before invoking the operation callback", async (t) => {
+  const state = await start(t);
+  const { server } = state;
+  const invalid = [
+    { expectedRevision: 1, command: { type: "board.replace", board: fixture().board } },
+    { expectedRevision: 1, command: { type: "board.update", fields: { title: "ok", waves: [] } } },
+    { expectedRevision: 1, command: { type: "phase.update", id: "P1", fields: { status: "turbo" } } },
+    { expectedRevision: 1, command: { type: "dependency.set", phase: "P1", deps: "P0" } },
+    { expectedRevision: 1, command: { type: "log.append", text: "entry", extra: true } },
+    { expectedRevision: 1, command: { type: "board.update", fields: { title: { unsafe: true } } } },
+  ];
+  for (const body of invalid) {
+    const response = await post(server, body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.ok((await json(response)).error);
+  }
+  assert.equal(state.calls, 0);
+  assert.equal((await fetch(`${server.origin}/${server.token}/api/command`, { method: "PUT" })).status, 405);
+});
+
+test("stale expected revisions return 409 without applying the command", async (t) => {
+  const state = await start(t);
+  const { server } = state;
+  const request = await post(server, { expectedRevision: 0, command: { type: "board.update", fields: { title: "stale" } } });
+  const response = await json(request);
+  assert.equal(request.status, 409);
+  assert.equal(response.snapshot.revision, state.current.revision);
+  assert.equal(response.snapshot.board.title, "Before");
+  assert.equal(state.calls, 0);
+});
+
+test("a compare-and-swap race reported under the callback lock also returns 409", async (t) => {
+  let current = fixture();
+  const server = await startEditorServer({
+    boardName: "demo",
+    port: 0,
+    loadSnapshot: async () => structuredClone(current),
+    applyCommand: async () => {
+      current = { board: { ...current.board, title: "CLI update" }, revision: 2 };
+      throw new EditorRevisionConflict("revision changed while waiting for the store lock");
+    },
+  });
+  t.after(() => server.close());
+  const request = await post(server, { expectedRevision: 1, command: { type: "board.update", fields: { title: "editor update" } } });
+  const response = await json(request);
+  assert.equal(request.status, 409);
+  assert.equal(response.snapshot.board.title, "CLI update");
+  assert.equal(response.snapshot.revision, 2);
+});
+
+test("custom revision comparison can defer a remote revision check to the backend callback", async (t) => {
+  let current = { ...fixture(), revision: "remote-v2" };
+  let calls = 0;
+  const server = await startEditorServer({
+    boardName: "demo",
+    port: 0,
+    loadSnapshot: async () => structuredClone(current),
+    isRevisionCurrent: async (expected, actual) => expected === "remote-v1" && actual === "remote-v2",
+    applyCommand: async () => {
+      calls++;
+      throw new EditorRevisionConflict("remote reconcile found a field conflict");
+    },
+  });
+  t.after(() => server.close());
+  const request = await post(server, { expectedRevision: "remote-v1", command: { type: "board.update", fields: { title: "editor update" } } });
+  const response = await json(request);
+  assert.equal(request.status, 409);
+  assert.equal(calls, 1);
+  assert.equal(response.snapshot.revision, "remote-v2");
+});
+
+test("snapshot polling reveals a board update made outside this server", async (t) => {
+  const state = await start(t);
+  const url = `${state.server.url}/api/snapshot`;
+  const firstResponse = await fetch(url, { cache: "no-store" });
+  const first = await json(firstResponse);
+  state.current = { board: { ...state.current.board, title: "Changed by trackerboard CLI" }, revision: 2 };
+  const polledResponse = await fetch(url, { cache: "no-store" });
+  const polled = await json(polledResponse);
+  const page = await (await fetch(state.server.url)).text();
+
+  assert.equal(first.revision, 1);
+  assert.equal(polled.revision, 2);
+  assert.equal(polled.board.title, "Changed by trackerboard CLI");
+  assert.match(page, /setInterval\(refreshSnapshot,\s*2_000\)/);
+});

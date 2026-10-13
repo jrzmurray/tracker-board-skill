@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Trackerboard editor</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #eef1f4; --paper: #fbfcfd; --ink: #16202b; --muted: #5a6878; --rule: #cfd7e0; --soft: #e3e8ee;
+      --accent: #2b59c3; --accent-tint: #dde6f8;
+      --todo: #5a6878; --todo-bg: #e6eaef; --active: #9a5b00; --active-bg: #fbecd2; --review: #6a3fb5; --review-bg: #ece4f8;
+      --waiting: #4c6070; --waiting-bg: #e2e9ee; --blocked: #b3261e; --blocked-bg: #f9e0dd; --done: #23744a; --done-bg: #dcf0e3;
+      --ongoing: #1f6f86; --ongoing-bg: #dbeff4; --external: #7a5a2e; --external-bg: #f1e8da; --dropped: #8792a0; --dropped-bg: #eceff2;
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { color-scheme: dark; --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
+        --accent:#86a8ff;--accent-tint:#22304d;--todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;
+        --review:#c3a5f5;--review-bg:#30244a;--waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;
+        --done:#7fd6a2;--done-bg:#1b3a29;--ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;
+        --dropped:#7f8b98;--dropped-bg:#222a33; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px max(14px, 3vw) 56px; color: var(--ink); background: var(--bg); }
+    main { max-width: 1280px; margin: 0 auto; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+    h1,h2,h3,p { margin: 0; }
+    h1 { font-size: clamp(22px, 3vw, 30px); line-height: 1.2; letter-spacing: -.02em; }
+    h2 { font-size: 17px; }
+    h3 { font-size: 14px; }
+    .eyebrow,.mono,.phase-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .09em; text-transform: uppercase; }
+    #connection { min-height: 1.5em; color: var(--muted); font-size: 12px; text-align: right; }
+    #connection[data-kind="error"], #connection[data-kind="conflict"] { color: var(--blocked); font-weight: 600; }
+    #connection[data-kind="saved"] { color: var(--done); }
+    #reload { margin-left: 8px; }
+    section { padding: 16px 0; border-bottom: 1px solid var(--rule); }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .section-head p,.hint { color: var(--muted); font-size: 12px; }
+    .board-fields,.wave-fields,.phase-fields,.phase-detail-fields,.create-fields { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(120px, 1fr)); }
+    .board-fields label:nth-child(3), .board-fields label:nth-child(4), .wave-fields label:last-child,
+    .phase-detail-fields label:last-child { grid-column: span 2; }
+    label { display: grid; gap: 4px; min-width: 0; font-size: 12px; font-weight: 600; }
+    input,select,textarea { width: 100%; min-width: 0; border: 1px solid var(--rule); border-radius: 4px; padding: 7px 8px; color: var(--ink); background: var(--paper); font: 13px/1.35 ui-sans-serif, system-ui, sans-serif; }
+    textarea { min-height: 56px; resize: vertical; }
+    input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible,summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 9px; }
+    button { border: 1px solid var(--rule); border-radius: 4px; padding: 6px 10px; color: var(--ink); background: var(--paper); font: 600 12px ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+    button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-tint); }
+    button.primary { border-color: var(--accent); color: var(--paper); background: var(--accent); }
+    button.danger { color: var(--blocked); }
+    button:disabled { opacity: .55; cursor: wait; }
+    .wave { padding: 13px 0 17px; border-top: 1px solid var(--rule); }
+    .wave:first-child { border-top: 0; }
+    .wave-title { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+    .wave-title .mono { color: var(--accent); font-size: 12px; font-weight: 700; }
+    .wave-form { padding: 0 0 10px; }
+    .phase-table { border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+    .phase-head,.phase-grid { display: grid; grid-template-columns: minmax(80px,.7fr) minmax(150px,1.8fr) minmax(90px,.7fr) minmax(105px,.8fr) minmax(140px,1.2fr) auto; gap: 8px; align-items: end; }
+    .phase-head { padding: 6px 8px; color: var(--muted); background: var(--soft); font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .phase-form { padding: 8px; border-top: 1px solid var(--soft); }
+    .phase-form:first-of-type { border-top: 0; }
+    .phase-id { min-height: 34px; display: flex; align-items: center; font-size: 12px; font-weight: 700; }
+    .phase-grid label { font-size: 12px; }
+    .phase-grid input,.phase-grid select { padding: 6px; }
+    details { margin-top: 8px; }
+    summary { width: fit-content; color: var(--accent); font-size: 12px; cursor: pointer; }
+    .phase-detail-fields { margin-top: 8px; }
+    .new-phase { padding: 12px 0 2px; }
+    .empty { padding: 12px 0; color: var(--muted); }
+    #log-list { display: grid; gap: 6px; padding: 0; margin: 0 0 12px; list-style: none; }
+    #log-list li { display: grid; grid-template-columns: 150px 1fr; gap: 12px; }
+    #log-list time { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .status { display: inline-block; border-radius: 3px; padding: 2px 7px; font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .status-todo{background:var(--todo-bg);color:var(--todo)} .status-active{background:var(--active-bg);color:var(--active)}
+    .status-review{background:var(--review-bg);color:var(--review)} .status-waiting{background:var(--waiting-bg);color:var(--waiting)}
+    .status-blocked{background:var(--blocked-bg);color:var(--blocked)} .status-done{background:var(--done-bg);color:var(--done)}
+    .status-ongoing{background:var(--ongoing-bg);color:var(--ongoing)} .status-external{background:var(--external-bg);color:var(--external)}
+    .status-dropped{background:var(--dropped-bg);color:var(--dropped)}
+    @media (max-width: 840px) {
+      .phase-head { display: none; }
+      .phase-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .phase-grid .phase-id,.phase-grid .actions { grid-column: span 2; }
+      .board-fields,.wave-fields,.phase-detail-fields,.create-fields { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .board-fields label:nth-child(3),.board-fields label:nth-child(4),.wave-fields label:last-child,.phase-detail-fields label:last-child { grid-column: span 2; }
+      header { align-items: start; flex-direction: column; }
+      #connection { text-align: left; }
+    }
+    @media (max-width: 480px) { .board-fields,.wave-fields,.phase-detail-fields,.create-fields { grid-template-columns: 1fr; } .board-fields label,.wave-fields label,.phase-detail-fields label { grid-column: auto!important; } #log-list li { grid-template-columns: 1fr; gap: 2px; } }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto!important; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">Trackerboard · local editor</div><h1 id="page-title">Loading board…</h1></div>
+      <p id="connection" role="status" aria-live="polite">Connecting to the local board…<button id="reload" type="button" hidden>Reload board</button></p>
+    </header>
+    <section aria-labelledby="board-heading">
+      <div class="section-head"><h2 id="board-heading">Board details</h2><p>Saved locally through trackerboard</p></div>
+      <form id="board-form" data-editor-form="board"></form>
+    </section>
+    <section aria-labelledby="waves-heading">
+      <div class="section-head"><h2 id="waves-heading">Waves and phases</h2><p>Changes from CLI commands appear automatically</p></div>
+      <form id="wave-create-form" data-editor-form="wave-create"></form>
+      <div id="wave-list" aria-live="polite"></div>
+    </section>
+    <section aria-labelledby="log-heading">
+      <div class="section-head"><h2 id="log-heading">Recent changes</h2><p>Newest entries first</p></div>
+      <ul id="log-list"></ul>
+      <form id="log-form" data-editor-form="log"></form>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const token = location.pathname.slice(1);
+      const base = `/${token}`;
+      const statusLabels = { todo: "not started", active: "in progress", review: "in review", waiting: "waiting", blocked: "blocked", done: "done", ongoing: "ongoing", external: "external", dropped: "dropped" };
+      const statusOrder = ["todo", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped"];
+      let snapshot = null;
+      let dirty = false;
+      let busy = false;
+      let conflictSnapshot = null;
+      const connection = document.getElementById("connection");
+      const reloadButton = document.getElementById("reload");
+
+      function element(tag, textValue) {
+        const result = document.createElement(tag);
+        if (textValue !== undefined) result.textContent = String(textValue ?? "");
+        return result;
+      }
+      function field(parent, labelText, name, value, { multiline = false, type = "text", maxLength = 20_000 } = {}) {
+        const label = element("label", labelText);
+        const control = element(multiline ? "textarea" : "input");
+        control.name = name;
+        control.value = String(value ?? "");
+        control.dataset.initialValue = control.value;
+        if (!multiline) control.type = type;
+        control.maxLength = maxLength;
+        label.append(control);
+        parent.append(label);
+        return control;
+      }
+      function statusField(parent, selected) {
+        const label = element("label", "Status");
+        const select = element("select");
+        select.name = "status";
+        select.dataset.initialValue = selected;
+        for (const status of statusOrder) {
+          const option = element("option", statusLabels[status]);
+          option.value = status;
+          option.selected = status === selected;
+          select.append(option);
+        }
+        label.append(select);
+        parent.append(label);
+        return select;
+      }
+      function button(parent, textValue, { primary = false, danger = false, type = "submit", action = "" } = {}) {
+        const result = element("button", textValue);
+        result.type = type;
+        if (primary) result.className = "primary";
+        if (danger) result.className = "danger";
+        if (action) result.dataset.action = action;
+        parent.append(result);
+        return result;
+      }
+      function actions(form) {
+        const result = element("div");
+        result.className = "actions";
+        form.append(result);
+        return result;
+      }
+      function setConnection(message, kind = "") {
+        connection.dataset.kind = kind;
+        connection.firstChild.textContent = message;
+        reloadButton.hidden = !conflictSnapshot;
+      }
+      function inputValues(form, names) {
+        const values = {};
+        for (const name of names) values[name] = form.elements.namedItem(name).value;
+        return values;
+      }
+      function changedValues(form, names) {
+        return Object.fromEntries(names.flatMap((name) => { const control = form.elements.namedItem(name); return control.value === control.dataset.initialValue ? [] : [[name, control.value]]; }));
+      }
+      function formKey(form) {
+        const { editorForm: kind, id, wave } = form.dataset;
+        return kind === "phase" || kind === "wave" ? `${kind}:${id}` : kind === "phase-create" ? `${kind}:${wave}` : kind;
+      }
+      function captureDrafts(exceptForm, command) {
+        return [...document.querySelectorAll("form[data-editor-form]")].filter((form) => form !== exceptForm).flatMap((form) => {
+          const values = Object.fromEntries([...form.elements].filter((control) => control.name && control.dataset.initialValue !== undefined && control.value !== control.dataset.initialValue).map((control) => [control.name, control.value]));
+          if (!Object.keys(values).length) return [];
+          const key = command?.type === "wave.update" && form.dataset.editorForm === "phase-create" && form.dataset.wave === command.id && command.rename
+            ? `phase-create:${command.rename}` : formKey(form);
+          return [{ key, values }];
+        });
+      }
+      function restoreDrafts(drafts) {
+        const forms = [...document.querySelectorAll("form[data-editor-form]")];
+        return drafts.flatMap((draft) => {
+          const form = forms.find((candidate) => formKey(candidate) === draft.key);
+          if (!form) return [draft.key];
+          return Object.entries(draft.values).flatMap(([name, value]) => {
+            const control = form.elements.namedItem(name);
+            if (!control || (control.tagName === "SELECT" && ![...control.options].some((option) => option.value === value))) return [`${draft.key}.${name}`];
+            control.value = value;
+            return [];
+          });
+        });
+      }
+      const hasDrafts = (form = null) => captureDrafts(null, null).some((draft) => !form || draft.key === formKey(form));
+      function setFormDisabled(form, value) {
+        for (const control of form.elements) control.disabled = value;
+      }
+      function pushButton(form, labelText, options) {
+        const actionBar = actions(form);
+        button(actionBar, labelText, options);
+        return actionBar;
+      }
+      function renderBoard(board, drafts = []) {
+        document.title = `${board.title || board.name} · Trackerboard`;
+        document.getElementById("page-title").textContent = board.title || board.name;
+        const boardForm = document.getElementById("board-form");
+        boardForm.replaceChildren();
+        const boardGrid = element("div"); boardGrid.className = "board-fields";
+        field(boardGrid, "Title", "title", board.title);
+        field(boardGrid, "Subtitle", "subtitle", board.subtitle);
+        field(boardGrid, "Lede", "lede", board.lede, { multiline: true });
+        field(boardGrid, "Notes", "notes", board.notes, { multiline: true });
+        field(boardGrid, "Repository URL", "repoUrl", board.repoUrl, { maxLength: 2_048 });
+        boardForm.append(boardGrid);
+        pushButton(boardForm, "Save board details", { primary: true });
+
+        const createWave = document.getElementById("wave-create-form");
+        createWave.replaceChildren();
+        const createWaveHead = element("h3", "Add wave"); createWave.append(createWaveHead);
+        const createWaveGrid = element("div"); createWaveGrid.className = "create-fields";
+        field(createWaveGrid, "Wave ID", "id", "", { maxLength: 120 });
+        field(createWaveGrid, "Title", "title", "");
+        field(createWaveGrid, "Prefix", "prefix", "", { maxLength: 120 });
+        field(createWaveGrid, "Notes", "notes", "", { multiline: true });
+        const afterLabel = element("label", "Insert after");
+        const after = element("select"); after.name = "after";
+        const first = element("option", "At end"); first.value = ""; after.append(first);
+        after.dataset.initialValue = "";
+        for (const wave of board.waves) { const option = element("option", `${wave.id} · ${wave.title || "untitled"}`); option.value = wave.id; after.append(option); }
+        afterLabel.append(after); createWaveGrid.append(afterLabel); createWave.append(createWaveGrid);
+        pushButton(createWave, "Add wave", { primary: true });
+
+        const waveList = document.getElementById("wave-list");
+        waveList.replaceChildren();
+        if (!board.waves.length) waveList.append(element("p", "No waves yet. Add a wave to start planning." )).className = "empty";
+        for (const wave of board.waves) waveList.append(renderWave(wave, board.waves));
+        renderLog(board.log || []);
+        const lost = restoreDrafts(drafts);
+        dirty = hasDrafts();
+        return lost;
+      }
+      function renderWave(wave, waves) {
+        const section = element("section"); section.className = "wave"; section.setAttribute("aria-label", `Wave ${wave.id}`);
+        const heading = element("div"); heading.className = "wave-title";
+        const id = element("span", wave.id); id.className = "mono"; heading.append(id);
+        heading.append(element("h3", wave.title || "Untitled wave"));
+        section.append(heading);
+        const form = element("form"); form.className = "wave-form"; form.dataset.editorForm = "wave"; form.dataset.id = wave.id;
+        const fields = element("div"); fields.className = "wave-fields";
+        field(fields, "New wave ID", "rename", "", { maxLength: 120 });
+        field(fields, "Title", "title", wave.title);
+        field(fields, "Prefix", "prefix", wave.prefix, { maxLength: 120 });
+        field(fields, "Notes", "notes", wave.notes, { multiline: true });
+        form.append(fields);
+        const bar = actions(form);
+        button(bar, "Save wave", { primary: true });
+        button(bar, "Delete wave", { type: "button", danger: true, action: "delete-wave" });
+        section.append(form);
+
+        if (!wave.phases.length) section.append(Object.assign(element("p", "No phases in this wave yet."), { className: "empty" }));
+        else {
+          const table = element("div"); table.className = "phase-table"; table.setAttribute("role", "table"); table.setAttribute("aria-label", `Phases in wave ${wave.id}`);
+          const phaseHead = element("div"); phaseHead.className = "phase-head"; phaseHead.setAttribute("role", "row");
+          for (const label of ["Phase", "Title", "Lane", "Owner", "Depends on", "Actions"]) { const cell = element("span", label); cell.setAttribute("role", "columnheader"); phaseHead.append(cell); }
+          table.append(phaseHead);
+          for (const phase of wave.phases) table.append(renderPhase(phase, wave, waves));
+          section.append(table);
+        }
+        section.append(renderNewPhase(wave));
+        return section;
+      }
+      function renderPhase(phase, wave, waves) {
+        const form = element("form"); form.className = "phase-form"; form.dataset.editorForm = "phase"; form.dataset.id = phase.id; form.dataset.wave = wave.id;
+        const grid = element("div"); grid.className = "phase-grid"; grid.setAttribute("role", "row");
+        const id = element("div", phase.id); id.className = "phase-id"; id.setAttribute("role", "cell"); grid.append(id);
+        field(grid, `Title for ${phase.id}`, "title", phase.title, { maxLength: 1_000 });
+        field(grid, `Lane for ${phase.id}`, "lane", phase.lane, { maxLength: 120 });
+        field(grid, `Owner for ${phase.id}`, "owner", phase.owner, { maxLength: 300 });
+        field(grid, `Dependencies for ${phase.id}`, "deps", (phase.deps || []).join(", "), { maxLength: 2_000 });
+        const bar = element("div"); bar.className = "actions";
+        button(bar, "Save", { primary: true });
+        button(bar, "Delete", { type: "button", danger: true, action: "delete-phase" });
+        grid.append(bar); form.append(grid);
+        const detail = element("details");
+        detail.append(element("summary", "Status and details"));
+        const detailGrid = element("div"); detailGrid.className = "phase-detail-fields";
+        statusField(detailGrid, phase.status || "todo");
+        detailGrid.append(createWaveSelect(`Move ${phase.id} to wave`, "toWave", wave.id, waves));
+        field(detailGrid, `Note for ${phase.id}`, "note", phase.note, { maxLength: 4_000 });
+        field(detailGrid, `Issue for ${phase.id}`, "issue", phase.issue, { maxLength: 1_000 });
+        field(detailGrid, `Pull request for ${phase.id}`, "pr", phase.pr, { maxLength: 1_000 });
+        field(detailGrid, `Requirements for ${phase.id}`, "req", phase.req, { multiline: true });
+        field(detailGrid, `Review for ${phase.id}`, "review", phase.review, { multiline: true });
+        field(detailGrid, `Notes for ${phase.id}`, "notes", phase.notes, { multiline: true });
+        detail.append(detailGrid); form.append(detail);
+        return form;
+      }
+      function createWaveSelect(labelText, name, selected, waves) {
+        const label = element("label", labelText); const select = element("select"); select.name = name;
+        select.dataset.initialValue = selected;
+        for (const wave of waves) { const option = element("option", `${wave.id} · ${wave.title || "untitled"}`); option.value = wave.id; option.selected = wave.id === selected; select.append(option); }
+        label.append(select); return label;
+      }
+      function renderNewPhase(wave) {
+        const form = element("form"); form.className = "new-phase"; form.dataset.editorForm = "phase-create"; form.dataset.wave = wave.id;
+        const heading = element("h3", "Add phase"); form.append(heading);
+        const grid = element("div"); grid.className = "create-fields";
+        field(grid, "Phase ID", "id", "", { maxLength: 120 });
+        field(grid, "Title", "title", "", { maxLength: 1_000 });
+        field(grid, "Lane", "lane", "", { maxLength: 120 });
+        field(grid, "Owner", "owner", "", { maxLength: 300 });
+        statusField(grid, "todo");
+        field(grid, "Depends on", "deps", "", { maxLength: 2_000 });
+        form.append(grid);
+        pushButton(form, "Add phase", { primary: true });
+        return form;
+      }
+      function renderLog(entries) {
+        const list = document.getElementById("log-list"); list.replaceChildren();
+        for (const entry of entries.slice(0, 12)) {
+          const item = element("li");
+          const time = element("time", entry.at || "");
+          if (entry.at) time.dateTime = entry.at;
+          item.append(time, element("span", entry.text)); list.append(item);
+        }
+        const form = document.getElementById("log-form"); form.replaceChildren();
+        const row = element("div"); row.className = "create-fields";
+        field(row, "Append a log entry", "text", "", { maxLength: 20_000 }); form.append(row);
+        pushButton(form, "Add log entry", { primary: true });
+      }
+
+      function updateCommand(form) {
+        const kind = form.dataset.editorForm;
+        if (kind === "board") {
+          const fields = changedValues(form, ["title", "subtitle", "lede", "notes", "repoUrl"]);
+          return Object.keys(fields).length ? { type: "board.update", fields } : null;
+        }
+        if (kind === "wave-create") {
+          const values = inputValues(form, ["id", "title", "prefix", "notes", "after"]);
+          const command = { type: "wave.create", id: values.id, fields: { title: values.title, prefix: values.prefix, notes: values.notes } };
+          if (values.after) command.after = values.after;
+          return command;
+        }
+        if (kind === "wave") {
+          const changed = changedValues(form, ["rename", "title", "prefix", "notes"]);
+          const fields = Object.fromEntries(Object.entries(changed).filter(([key]) => key !== "rename"));
+          const command = { type: "wave.update", id: form.dataset.id, fields };
+          if (changed.rename?.trim()) command.rename = changed.rename;
+          if (!Object.keys(fields).length && !command.rename) return null;
+          return command;
+        }
+        if (kind === "phase-create") {
+          const values = inputValues(form, ["id", "title", "lane", "owner", "status", "deps"]);
+          return { type: "phase.create", id: values.id, wave: form.dataset.wave,
+            fields: { title: values.title, lane: values.lane, owner: values.owner, status: values.status, deps: parseDependencies(values.deps) } };
+        }
+        if (kind === "phase") {
+          const names = ["title", "lane", "owner", "deps", "status", "toWave", "note", "issue", "pr", "req", "review", "notes"];
+          const values = changedValues(form, names);
+          const fields = Object.fromEntries(Object.entries(values).filter(([key]) => key !== "toWave"));
+          if (fields.deps !== undefined) fields.deps = parseDependencies(fields.deps);
+          const command = { type: "phase.update", id: form.dataset.id, wave: form.dataset.wave, fields };
+          if (values.toWave !== undefined) command.toWave = values.toWave;
+          if (!Object.keys(fields).length && command.toWave === undefined) return null;
+          return command;
+        }
+        if (kind === "log") return { type: "log.append", text: form.elements.namedItem("text").value };
+        return null;
+      }
+      function parseDependencies(value) { return value.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean); }
+
+      async function submitCommand(command, sourceForm = null) {
+        if (!snapshot || busy) return;
+        const drafts = captureDrafts(sourceForm, command);
+        busy = true;
+        document.querySelectorAll("form").forEach((form) => setFormDisabled(form, true));
+        setConnection("Saving…");
+        try {
+          const response = await fetch(`${base}/api/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+            body: JSON.stringify({ expectedRevision: snapshot.revision, command }),
+          });
+          const result = await response.json();
+          if (response.status === 409) {
+            conflictSnapshot = result.snapshot;
+            dirty = true;
+            setConnection("Conflict: the board changed elsewhere. Your edits are still here; reload to review the latest snapshot.", "conflict");
+          } else if (!response.ok) {
+            setConnection(result.error || "Save failed. Your edits are still here.", "error");
+          } else {
+            snapshot = result;
+            conflictSnapshot = null;
+            const lost = renderBoard(snapshot.board, drafts);
+            setConnection(lost.length
+              ? `Saved. Unsaved edits could not be retained for removed records: ${lost.join(", ")}.`
+              : dirty ? "Saved. Other unsaved edits are still here." : "Saved.", lost.length ? "conflict" : dirty ? "" : "saved");
+          }
+        } catch {
+          setConnection("Could not reach the local editor server. Your edits are still here.", "error");
+        } finally {
+          busy = false;
+          document.querySelectorAll("form").forEach((form) => setFormDisabled(form, false));
+        }
+      }
+      function confirmAction(message) { return window.confirm(message); }
+
+      document.addEventListener("input", (event) => {
+        if (event.target.closest("form")) { dirty = hasDrafts(); setConnection("Unsaved edits. Save to apply."); }
+      });
+      document.addEventListener("change", (event) => {
+        if (event.target.closest("form")) { dirty = hasDrafts(); setConnection("Unsaved edits. Save to apply."); }
+      });
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.dataset.editorForm) return;
+        event.preventDefault();
+        const command = updateCommand(form);
+        if (command) submitCommand(command, form);
+      });
+      document.addEventListener("click", (event) => {
+        const action = event.target.closest("[data-action]");
+        if (!action) return;
+        const form = action.closest("form");
+        if (action.dataset.action === "delete-wave") {
+          const wave = snapshot.board.waves.find((item) => item.id === form.dataset.id);
+          if (!wave) return;
+          const phaseKeys = new Set(wave.phases.map((phase) => `phase:${phase.id}`));
+          const affected = captureDrafts(null, null).filter((draft) => phaseKeys.has(draft.key) || draft.key === `phase-create:${wave.id}` || draft.key === `wave:${wave.id}`);
+          const loss = affected.length ? ` This will discard unsaved edits in ${affected.length} form(s).` : "";
+          if (confirmAction(`Delete wave ${wave.id}${wave.phases.length ? ` and its ${wave.phases.length} phase(s)` : ""}?${loss}`)) {
+            submitCommand({ type: "wave.delete", id: wave.id, force: wave.phases.length > 0 }, form);
+          }
+        } else if (action.dataset.action === "delete-phase") {
+          const loss = hasDrafts(form) ? " This will discard this phase's unsaved edits." : "";
+          if (confirmAction(`Delete phase ${form.dataset.id}?${loss}`)) {
+            submitCommand({ type: "phase.delete", id: form.dataset.id, wave: form.dataset.wave }, form);
+          }
+        }
+      });
+      reloadButton.addEventListener("click", () => {
+        if (!conflictSnapshot) return;
+        snapshot = conflictSnapshot;
+        conflictSnapshot = null;
+        dirty = false;
+        renderBoard(snapshot.board);
+        setConnection("Loaded the latest board snapshot.");
+      });
+      async function refreshSnapshot() {
+        if (busy) return;
+        try {
+          const response = await fetch(`${base}/api/snapshot`, { cache: "no-store" });
+          if (!response.ok) throw new Error("snapshot request failed");
+          const fresh = await response.json();
+          if (!snapshot) {
+            snapshot = fresh;
+            renderBoard(snapshot.board);
+            setConnection("Connected. Checking for updates every 2 seconds.");
+          } else if (!Object.is(fresh.revision, snapshot.revision)) {
+            if (dirty) {
+              conflictSnapshot = fresh;
+              setConnection("The board changed elsewhere. Your unsaved edits are still here.", "conflict");
+            } else {
+              snapshot = fresh;
+              renderBoard(snapshot.board);
+              setConnection("Updated from another trackerboard write.");
+            }
+          }
+        } catch {
+          if (!snapshot) setConnection("Could not load the board. Check the local server and try again.", "error");
+          else setConnection("Connection interrupted. Retrying automatically.", "error");
+        }
+      }
+      refreshSnapshot();
+      window.setInterval(refreshSnapshot, 2_000);
+    })();
+  </script>
+</body>
+</html>

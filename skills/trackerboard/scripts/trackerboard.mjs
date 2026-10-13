@@ -2,15 +2,15 @@
 // trackerboard: deterministic CRUD for phase/wave tracker boards that publish
 // to a claude.ai artifact. Run `trackerboard help` for usage.
 
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
-import * as G from "./lib/github.mjs";
-import { content, mergeBoards, sameContent } from "./lib/merge.mjs";
-import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage, renderStandalone } from "./lib/render.mjs";
+import { docBody, renderStandalone } from "./lib/render.mjs";
+import { createArtifactCommands } from "./commands/artifact.mjs";
+import { createBackendCommands } from "./commands/backend.mjs";
+import { createGeneratedCommands } from "./commands/generated.mjs";
+import { createDisplayHelpers } from "./lib/cli/display.mjs";
 
 const FRESH_SECONDS_HELP = process.env.TRACKERBOARD_FRESH_SECONDS ?? 120;
 const USAGE = `trackerboard <command> [options]
@@ -22,7 +22,7 @@ Boards
   bind [--board B] [--branch]     Record that this repo (all its worktrees) uses a board, so --board can
                          be omitted here. Local to this machine; --branch limits it to this branch.
   unbind [--board B] [--all]      Remove this directory's binding (or every binding).
-  remove <name> --force           Delete a board and its local state.
+  remove <name> --force           Delete a board, local state, and bound GitHub Project (if any).
 
 Read
   show [--phase P] [--json]              Compact board summary, grouped by wave and lane (or one phase).
@@ -69,10 +69,16 @@ Generated boards (the input format is board.schema.json)
                           changes, adds and removals. --keep: phase fields the board keeps.
   github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE]
                           Find phase ids in open PRs and issues: fill --pr and --issue,
-                          and move todo/waiting -> active (draft PR) or review (ready PR).
-                          Never moves a phase back. --repo defaults to the board's repo URL.
-                          --file: update a board JSON file instead (run it before
-                          import --replace so the overlay is not undone by each import).
+                          without changing the human-controlled phase status. PR lifecycle
+                          badges are derived separately. --repo defaults to the board's repo URL.
+  refresh-prs [--repo OWNER/NAME] [--limit N]
+                          Refresh derived per-PR lifecycle badges (cached locally for 60 seconds).
+
+Backend and local editor
+  backend [--json]                Show the resolved backend and configuration sources.
+  migrate --to json|sqlite|github [--dry-run]
+                                  Migrate and verify before switching this board's backend.
+  serve [--port N]                Open a local, editable board at a loopback-only URL.
 `;
 
 // ---------- args ----------
@@ -127,185 +133,6 @@ function rejectLeftovers(opts, pos, extra = 0) {
 
 const out = (s = "") => process.stdout.write(s + "\n");
 
-// Each document body gets its own content-addressed file, so a publish call
-// always sends the snapshot it was printed for, even if another agent on this
-// machine writes the board before the call is made.
-async function writeDoc(board) {
-  const body = JSON.stringify(await docBody(board));
-  if (Buffer.byteLength(body) > DOC_LIMIT) {
-    throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte db limit; trim long fields or the log`);
-  }
-  const dir = path.join(S.outDir(), "docs");
-  const file = path.join(dir, `${board.name}-${createHash("sha256").update(body).digest("hex").slice(0, 12)}.json`);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, body);
-  return file;
-}
-
-// ---------- freshness ----------
-
-// Writes need a recent check against the artifact, because other agents may
-// publish to it at any time.
-const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
-const linked = (local) => !!local.artifactUrl && local.dbVersion != null;
-const checkedAgo = (local) => local.checkedAt ? (Date.now() - Date.parse(local.checkedAt)) / 1000 : Infinity;
-const age = (sec) => sec === Infinity ? "never" : sec < 90 ? `${Math.round(sec)}s ago` : sec < 5400 ? `${Math.round(sec / 60)}m ago` : `${Math.round(sec / 3600)}h ago`;
-
-function refreshLines(name, local) {
-  const call = { action: "get", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, out_dir: S.remoteDir(name) };
-  return [
-    `refresh: ArtifactData ${JSON.stringify(call)}`,
-    `then:    trackerboard pull --board ${name} --version <version from the result>`,
-  ];
-}
-
-function requireFresh(name) {
-  const local = S.loadLocal(name);
-  if (!linked(local) || checkedAgo(local) <= FRESH_SECONDS) return;
-  throw new B.BoardError(`${name} was last checked against its artifact ${age(checkedAgo(local))}; other agents may have written it. Refresh, then repeat this command:\n${refreshLines(name, local).join("\n")}`);
-}
-
-function staleNote(name, toStderr = false) {
-  const local = S.loadLocal(name);
-  if (linked(local) && checkedAgo(local) > FRESH_SECONDS) {
-    (toStderr ? (s) => process.stderr.write(s.trimStart() + "\n") : out)(`\nnote: last checked against the artifact ${age(checkedAgo(local))}; \`trackerboard refresh\` first if others may have written it`);
-  }
-}
-
-async function pushInstruction(board) {
-  const local = S.loadLocal(board.name);
-  const file = await writeDoc(board);
-  if (!local.artifactUrl) {
-    out(`publish: (no artifact linked; \`trackerboard page\` publishes one)`);
-    return;
-  }
-  const call = { action: "set", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, file_path: file };
-  if (local.dbVersion != null) call.if_version = local.dbVersion;
-  out(`publish: ArtifactData ${JSON.stringify(call)}`);
-  out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
-}
-
-async function commit(board, opts, summary) {
-  requireFresh(board.name);
-  B.appendLog(board, opts.log);
-  S.saveBoard(board);
-  out(`ok: ${summary}`);
-  await pushInstruction(board);
-}
-
-// ---------- show ----------
-
-const short = (s, n = 70) => {
-  const t = String(s || "").replace(/\s+/g, " ").trim();
-  return t.length > n ? t.slice(0, n - 1) + "…" : t;
-};
-
-function showPhase(wave, p) {
-  out(`${p.id}  [${p.status}]  wave ${wave.id}${p.lane ? `  lane ${p.lane}` : ""}${p.owner ? `  owner ${p.owner}` : ""}`);
-  for (const f of ["title", "note", "deps", "issue", "pr", "review", "req", "notes"]) {
-    const v = f === "deps" ? p.deps.join(", ") : p[f];
-    if (v) out(`  ${f}: ${v}`);
-  }
-}
-
-// Phase filters shared by the show views: --wave, --lane, --status, --owner.
-// --lane "" and --owner "" select phases with none.
-function selectPhases(board, opts) {
-  const lc = (v) => String(v).toLowerCase();
-  let rows = B.allPhases(board);
-  if (opts.wave != null) {
-    const w = B.requireWave(board, opts.wave);
-    rows = rows.filter((r) => r.wave === w);
-  }
-  if (opts.lane != null) {
-    const lanes = [...new Set(B.allPhases(board).map((r) => r.phase.lane || ""))];
-    if (!lanes.some((l) => lc(l) === lc(opts.lane))) {
-      throw new B.BoardError(`no lane "${opts.lane}"; lanes: ${lanes.map((l) => l || '""').join(", ")}`);
-    }
-    rows = rows.filter((r) => lc(r.phase.lane || "") === lc(opts.lane));
-  }
-  if (opts.status != null) {
-    const want = new Set(B.parseList(opts.status).map(B.normalizeStatus));
-    rows = rows.filter((r) => want.has(r.phase.status));
-  }
-  if (opts.owner != null) rows = rows.filter((r) => lc(r.phase.owner || "") === lc(opts.owner));
-  return rows;
-}
-
-function showBoard(board, name, opts) {
-  if (opts.phase) {
-    const { wave, phase } = B.locatePhase(board, opts.phase, opts.wave);
-    if (opts.json) return out(JSON.stringify(phase, null, 2));
-    showPhase(wave, phase);
-    for (const d of B.dependents(board, phase.id)) out(`  needed by: ${d}`);
-    staleNote(name);
-    return;
-  }
-  const filtered = ["lane", "status", "owner"].some((k) => opts[k] != null);
-  const rows = selectPhases(board, opts);
-  if (opts.json) {
-    const v = filtered ? rows.map((r) => ({ wave: r.wave.id, ...r.phase })) : opts.wave ? B.requireWave(board, opts.wave) : board;
-    out(JSON.stringify(v, null, 2));
-    return;
-  }
-  // Terse views write only their rows to stdout; the staleness note goes to stderr.
-  if (opts.ids) {
-    for (const r of rows) out(r.phase.id);
-    return staleNote(name, true);
-  }
-  if (opts["pr-list"]) {
-    const withPr = rows.filter((r) => /[\p{L}\p{N}]/u.test(r.phase.pr || "")); // skip "—" placeholders
-    const w = Math.max(0, ...withPr.map((r) => r.phase.id.length));
-    for (const { phase: p } of withPr) out(`${p.id.padEnd(w)}  ${p.status.padEnd(8)} ${short(p.pr, 90)}`);
-    if (!withPr.length) out("(no PRs)");
-    return staleNote(name, true);
-  }
-
-  const local = S.loadLocal(name);
-  out(`${board.name}: ${board.title}`);
-  out(`artifact: ${local.artifactUrl || "(none)"}  db version: ${local.dbVersion ?? "(unknown)"}`);
-  const line = (p) => `${p.id.padEnd(10)} ${p.status.padEnd(8)} ${short(p.title, 34).padEnd(34)} ${p.deps.length ? "← " + p.deps.join(",") : ""}${p.owner ? `  @${p.owner}` : ""}`.trimEnd();
-  for (const w of board.waves) {
-    const mine = rows.filter((r) => r.wave === w).map((r) => r.phase);
-    if (!mine.length && (filtered || opts.wave != null)) continue;
-    out(`\nwave ${w.id}${w.title ? ` — ${w.title}` : ""}${w.prefix ? `  (prefix ${w.prefix})` : ""}`);
-    // Group by lane, in order of first use, with the lane's done count (the
-    // whole lane, not just the filtered rows), as the page does.
-    const lanes = new Map();
-    for (const p of mine) {
-      const l = p.lane || "";
-      if (!lanes.has(l)) lanes.set(l, []);
-      lanes.get(l).push(p);
-    }
-    const laned = w.phases.some((p) => p.lane);
-    for (const [l, ps] of lanes) {
-      const indent = laned ? "    " : "  ";
-      if (laned) {
-        const all = w.phases.filter((p) => (p.lane || "") === l);
-        out(`  ${l ? `lane ${l}` : "no lane"}  ${all.filter((p) => p.status === "done").length}/${all.length} done`);
-      }
-      for (const p of ps) out(indent + line(p));
-    }
-  }
-  if (filtered && !rows.length) out("\n(no matching phases)");
-  const shown = new Set(rows.map((r) => r.phase.id));
-  const ready = B.readyPhases(board).filter((id) => shown.has(id));
-  if (ready.length) out(`\nready: ${ready.join(", ")}`);
-  staleNote(name);
-}
-
-// Delete this board's document snapshots older than a day, except `keep`.
-function pruneDocs(name, keep) {
-  const dir = path.join(S.outDir(), "docs");
-  let files = [];
-  try { files = fs.readdirSync(dir); } catch { return; }
-  for (const f of files) {
-    const file = path.join(dir, f);
-    if (!f.startsWith(`${name}-`) || file === keep) continue;
-    try { if (Date.now() - fs.statSync(file).mtimeMs > 86400000) fs.rmSync(file); } catch {}
-  }
-}
-
 // ---------- commands ----------
 
 function boardName(opts) {
@@ -314,15 +141,30 @@ function boardName(opts) {
   return n;
 }
 
+function bindBoard(opts) {
+  const name = S.checkName(opts.board || S.resolveBoardName(null));
+  const binding = S.makeBinding(S.context(), { branch: !!opts.branch });
+  const local = S.loadLocal(name);
+  if (!local.bindings.some((item) => item.key === binding.key)) local.bindings.push(binding);
+  S.saveLocal(name, local);
+  out(`ok: ${name} bound to ${binding.root}${binding.branch ? ` @ ${binding.branch}` : ""} (key ${binding.key})`);
+}
+
+const artifact = createArtifactCommands({ boardName, out });
+const { commit, cachedPrStates } = artifact;
+const display = createDisplayHelpers({ out, staleNote: artifact.staleNote });
+const generatedCommands = createGeneratedCommands({ boardName, out, commit, bindBoard });
+
 const commands = {
   help() { out(USAGE); },
+  ...createBackendCommands({ boardName, rejectLeftovers, out }),
+  ...artifact.commands,
+  ...generatedCommands,
 
   create({ pos, opts }) {
     const name = S.checkName(pos[0] || opts.board);
     const meta = take(opts, ["title", "repoUrl"]);
-    const board = S.createBoard(name, { title: meta.title });
-    if (meta.repoUrl) board.repoUrl = meta.repoUrl;
-    S.saveBoard(board);
+    const board = S.createBoard(name, meta);
     let where = "unbound";
     if (!opts["no-bind"]) {
       const ctx = S.context();
@@ -330,8 +172,10 @@ const commands = {
       S.saveLocal(name, { ...S.loadLocal(name), bindings: [b] });
       where = `bound to ${b.root}${b.branch ? ` @ ${b.branch}` : ""} (key ${b.key})`;
     }
-    out(`ok: created board ${name}, ${where}`);
-    out(`next: trackerboard page --board ${name}   (publish its artifact)`);
+    const backend = S.backendConfig(name).backend;
+    out(`ok: created board ${name}, ${where}${backend === "github" ? " with a private GitHub Project" : ` using ${backend}`}`);
+    out(`next: trackerboard show --board ${name}`);
+    if (backend !== "github") out(`optional: trackerboard page --board ${name}   (publish a Claude artifact)`);
   },
 
   boards() {
@@ -346,14 +190,7 @@ const commands = {
     }
   },
 
-  bind({ opts }) {
-    const name = S.checkName(opts.board || S.resolveBoardName(null));
-    const b = S.makeBinding(S.context(), { branch: !!opts.branch });
-    const local = S.loadLocal(name);
-    if (!local.bindings.some((x) => x.key === b.key)) local.bindings.push(b);
-    S.saveLocal(name, local);
-    out(`ok: ${name} bound to ${b.root}${b.branch ? ` @ ${b.branch}` : ""} (key ${b.key})`);
-  },
+  bind({ opts }) { bindBoard(opts); },
 
   unbind({ opts }) {
     const name = boardName(opts);
@@ -369,13 +206,16 @@ const commands = {
     const name = S.checkName(pos[0] || opts.board);
     S.loadBoard(name);
     if (!opts.force) throw new B.BoardError(`pass --force to delete board ${name}`);
+    const backend = S.backendConfig(name).backend;
     S.removeBoard(name);
-    out(`ok: removed board ${name} (the published artifact is untouched)`);
+    out(backend === "github"
+      ? `ok: removed board ${name} and its bound GitHub Project (the Claude artifact is untouched)`
+      : `ok: removed board ${name} (the published artifact is untouched)`);
   },
 
   show({ opts }) {
     const name = boardName(opts);
-    showBoard(S.loadBoard(name), name, opts);
+    display.showBoard(S.loadBoard(name), name, opts);
   },
 
   insert({ pos, opts }) {
@@ -489,226 +329,11 @@ const commands = {
     return commit(board, { log: text }, "logged");
   },
 
-  async page({ opts }) {
-    const name = boardName(opts);
-    const board = S.loadBoard(name);
-    const file = path.join(S.outDir(), `${name}.page.html`);
-    fs.mkdirSync(S.outDir(), { recursive: true });
-    fs.writeFileSync(file, renderPage(await docBody(board)));
-    const local = S.loadLocal(name);
-    out(`ok: wrote ${file}`);
-    if (local.artifactUrl) {
-      out(`publish: Artifact {"action":"publish","url":"${local.artifactUrl}","file_path":"${file}"}`);
-      out("(only needed when the page template changed; data updates go through push)");
-      return;
-    }
-    out(`publish: Artifact ${JSON.stringify({ action: "publish", file_path: file, icon: "checklist", capabilities: CAPABILITIES, description: `Phase tracker for ${board.title}` })}`);
-    out(`then:    trackerboard link --board ${name} --url <artifact url>   and   trackerboard push --board ${name}`);
-  },
-
-  link({ opts }) {
-    const name = boardName(opts);
-    if (!opts.url || !/^https:\/\/claude\.ai\/(code\/)?artifact\//.test(opts.url)) throw new B.BoardError("link needs --url https://claude.ai/artifact/...");
-    const local = S.loadLocal(name);
-    if (local.artifactUrl !== opts.url) { local.dbVersion = null; local.checkedAt = null; S.dropBase(name); }
-    local.artifactUrl = opts.url;
-    S.saveLocal(name, local);
-    out(`ok: ${name} -> ${opts.url}`);
-  },
-
-  async push({ opts }) {
-    const name = boardName(opts);
-    await pushInstruction(S.loadBoard(name));
-  },
-
-  synced({ opts }) {
-    const name = boardName(opts);
-    const v = Number(opts.version);
-    if (!Number.isInteger(v) || v < 1) throw new B.BoardError("synced needs --version <positive integer>");
-    // The published document is now the merge base: the snapshot that was
-    // sent (--doc), or the local board if it was not named.
-    const sent = opts.doc ? JSON.parse(fs.readFileSync(opts.doc, "utf8")) : S.loadBoard(name);
-    if (sent.name !== name) throw new B.BoardError(`document is board "${sent.name}", not "${name}"`);
-    delete sent.layout;
-    S.saveBase(name, sent);
-    const local = S.loadLocal(name);
-    local.dbVersion = v;
-    local.checkedAt = new Date().toISOString();
-    S.saveLocal(name, local);
-    pruneDocs(name, opts.doc);
-    out(`ok: ${name} db version ${v}`);
-  },
-
-  refresh({ opts }) {
-    const name = boardName(opts);
-    const local = S.loadLocal(name);
-    if (!local.artifactUrl) return out(`ok: ${name} has no artifact linked; nothing to check`);
-    for (const l of refreshLines(name, local)) out(l);
-  },
-
-  // Bring in the published document. Unpublished local changes are merged
-  // onto it; a field changed differently on both sides stops the pull unless
-  // --theirs or --ours says which side wins.
-  async pull({ opts }) {
-    const name = boardName(opts);
-    const v = Number(opts.version);
-    if (!Number.isInteger(v) || v < 1) throw new B.BoardError("pull needs --version <version from the ArtifactData result>");
-    const from = opts.from || path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
-    const remote = JSON.parse(fs.readFileSync(from, "utf8"));
-    delete remote.layout; // derived; recomputed on every push
-    if (remote.name !== name) throw new B.BoardError(`document is board "${remote.name}", not "${name}"`);
-    B.validate(remote);
-    const local = S.loadLocal(name);
-    const board = S.loadBoard(name);
-    const base = S.loadBase(name);
-    const now = new Date().toISOString();
-
-    if (local.dbVersion != null && v < local.dbVersion) {
-      return out(`ok: version ${v} is older than the recorded ${local.dbVersion}; nothing changed`);
-    }
-    if (v === local.dbVersion) {
-      if (!base) S.saveBase(name, remote);
-      S.saveLocal(name, { ...local, checkedAt: now });
-      out(`ok: ${name} is current at db version ${v}`);
-      if (!sameContent(board, base || remote)) {
-        out("local changes are not published yet:");
-        await pushInstruction(board);
-      }
-      return;
-    }
-
-    // Without a recorded base, assume nothing local is unpublished.
-    const prefer = opts.theirs ? "remote" : opts.ours ? "local" : null;
-    const { board: merged, conflicts, notes } = !base || sameContent(board, base)
-      ? { board: remote, conflicts: [], notes: [] }
-      : mergeBoards(content(base), content(board), content(remote), { prefer });
-    if (conflicts.length) {
-      throw new B.BoardError(`db version ${v} conflicts with unpublished changes here:\n  ${conflicts.join("\n  ")}\nRerun with --theirs (keep the artifact's) or --ours (keep these), or ask the user which.`);
-    }
-    if (!base && !sameContent(board, remote)) out("note: no merge base was recorded, so the local board was replaced by the artifact's");
-    B.validate(merged);
-    S.saveBoard(merged);
-    S.saveBase(name, remote);
-    S.saveLocal(name, { ...local, dbVersion: v, checkedAt: now });
-    out(`ok: pulled ${name} db version ${v}${local.dbVersion != null ? ` (was ${local.dbVersion})` : ""}`);
-    for (const n of notes) out(`note: ${n}`);
-    if (!sameContent(merged, remote)) {
-      out("merged with unpublished changes here; publish them:");
-      await pushInstruction(merged);
-    }
-  },
-
-  async import({ pos, opts }) {
-    if (!opts.from) throw new B.BoardError("import needs --from <board json>");
-    let raw;
-    try {
-      raw = JSON.parse(fs.readFileSync(opts.from, "utf8"));
-    } catch (e) {
-      throw new B.BoardError(`cannot read ${opts.from}: ${e.message}`);
-    }
-    const incoming = B.normalizeBoard(raw);
-    // --replace with no name updates the file's board, or the one this directory resolves to.
-    const name = pos[0] || opts.board || incoming.name || (opts.replace ? boardName(opts) : "");
-    if (!name) throw new B.BoardError("import needs a board name: an argument, --board, or \"name\" in the file");
-    S.checkName(name);
-    incoming.name = name;
-    incoming.title ||= name;
-    if (!opts.replace) {
-      if (opts.keep) throw new B.BoardError("--keep only applies with --replace");
-      if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; pass --replace to update it from this file`);
-      S.createBoard(name, { title: incoming.title });
-      S.saveBoard(incoming);
-      out(`ok: imported ${name} (${B.allPhases(incoming).length} phases)`);
-      if (!opts["no-bind"]) commands.bind({ opts: { board: name, branch: opts.branch } });
-      return;
-    }
-    if (opts["no-bind"] || opts.branch) throw new B.BoardError("--replace keeps the board's bindings; drop --no-bind / --branch");
-    const current = B.normalizeBoard(S.loadBoard(name));
-    const keep = B.parseList(opts.keep || "");
-    for (const f of keep) {
-      if (!B.PHASE_FIELDS.includes(f)) throw new B.BoardError(`--keep: unknown phase field "${f}"; fields: ${B.PHASE_FIELDS.join(", ")}`);
-    }
-    const before = new Map(B.allPhases(current).map(({ phase }) => [phase.id.toLowerCase(), phase]));
-    const after = new Map(B.allPhases(incoming).map(({ phase }) => [phase.id.toLowerCase(), phase]));
-    // --keep: fields this board owns rather than the generator (an agent's owner, say).
-    for (const [id, p] of after) {
-      const was = before.get(id);
-      if (was) for (const f of keep) p[f] = f === "deps" ? [...was.deps] : was[f];
-    }
-    if (keep.includes("deps")) B.validate(incoming);
-    // The log is the board's history, so keep it and add any entries the file brings.
-    const seen = new Set();
-    incoming.log = [...incoming.log, ...current.log]
-      .filter((e) => { const k = `${e.at}\0${e.text}`; return !seen.has(k) && seen.add(k); })
-      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
-      .slice(0, B.LOG_LIMIT);
-    if (sameContent(incoming, current) && !opts.log) {
-      out(`ok: ${name} already matches ${opts.from}`);
-      return;
-    }
-    const added = [...after.keys()].filter((id) => !before.has(id)).map((id) => after.get(id).id);
-    const removed = [...before.keys()].filter((id) => !after.has(id)).map((id) => before.get(id).id);
-    const moved = [...after].filter(([id, p]) => before.has(id) && before.get(id).status !== p.status)
-      .map(([id, p]) => `${p.id} ${before.get(id).status} → ${p.status}`);
-    const changed = [...after].filter(([id, p]) => before.has(id) && !sameContent(before.get(id), p)).length;
-    const list = (xs) => xs.slice(0, 8).join(", ") + (xs.length > 8 ? `, +${xs.length - 8} more` : "");
-    const parts = [
-      moved.length && `${moved.length} status change(s): ${list(moved)}`,
-      added.length && `${added.length} added: ${list(added)}`,
-      removed.length && `${removed.length} removed: ${list(removed)}`,
-    ].filter(Boolean);
-    if (!opts.log && parts.length) B.appendLog(incoming, `import: ${parts.join("; ")}`);
-    const what = changed || added.length || removed.length ? `${changed} changed, ${added.length} added, ${removed.length} removed` : "board fields only";
-    await commit(incoming, opts, `replaced ${name} from ${opts.from} (${what})`);
-  },
-
-  async github({ opts }) {
-    // --file: overlay a board JSON file in place, before `import --replace`,
-    // so a regenerated board and its overlay land as one change.
-    let board;
-    if (opts.file) {
-      try {
-        board = B.normalizeBoard(JSON.parse(fs.readFileSync(opts.file, "utf8")));
-      } catch (e) {
-        throw e instanceof B.BoardError ? e : new B.BoardError(`cannot read ${opts.file}: ${e.message}`);
-      }
-    } else {
-      board = S.loadBoard(boardName(opts));
-    }
-    const sources = opts.in ? B.parseList(opts.in) : G.DEFAULT_SOURCES;
-    for (const s of sources) if (!G.SOURCES.includes(s)) throw new B.BoardError(`--in: unknown source "${s}"; sources: ${G.SOURCES.join(", ")}`);
-    const repo = opts.repo || (board.repoUrl.match(/github\.com[/:]([^/]+\/[^/#?]+?)(?:\.git)?\/?$/) || [])[1] || null;
-    const limit = String(opts.limit || 1000);
-    const gh = (args) => {
-      const r = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...(repo ? ["--repo", repo] : []), "--state", "open", "--limit", limit], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-      if (r.error) throw new B.BoardError(`cannot run gh (${r.error.code === "ENOENT" ? "not installed" : r.error.message}); install the GitHub CLI and run \`gh auth login\``);
-      if (r.status !== 0) throw new B.BoardError(`gh ${args.slice(0, 2).join(" ")} failed: ${r.stderr.trim()}`);
-      return JSON.parse(r.stdout || "[]");
-    };
-    const fields = ["number", "title", "labels", ...(sources.includes("body") ? ["body"] : [])];
-    const prs = gh(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "closingIssuesReferences"].join(",")]);
-    const issues = gh(["issue", "list", "--json", fields.join(",")]);
-    const changes = G.applyGithub(board, { prs, issues }, { sources });
-    const scanned = `${prs.length} open PRs and ${issues.length} open issues${repo ? ` in ${repo}` : ""}`;
-    if (!changes.length) return out(`ok: no changes from ${scanned}`);
-    for (const c of changes) out(`  ${G.describeChange(c)}`);
-    if (opts["dry-run"]) return out(`dry run: ${changes.length} phase(s) would change from ${scanned}`);
-    if (opts.file) {
-      fs.writeFileSync(opts.file, JSON.stringify(board, null, 2) + "\n");
-      return out(`ok: ${changes.length} phase(s) in ${opts.file} updated from ${scanned}`);
-    }
-    if (!opts.log) {
-      const moved = changes.filter((c) => c.status).map((c) => `${c.id} ${c.status[1]}`);
-      B.appendLog(board, `github: ${changes.length} phase(s) updated from open PRs/issues${moved.length ? ` (${moved.slice(0, 8).join(", ")}${moved.length > 8 ? ", …" : ""})` : ""}`);
-    }
-    await commit(board, opts, `${changes.length} phase(s) updated from ${scanned}`);
-  },
-
   async render({ opts }) {
     const name = boardName(opts);
     const file = opts.out || path.join(S.outDir(), `${name}.html`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name))));
+    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name), { prStates: cachedPrStates(name) })));
     out(`ok: wrote ${file}`);
   },
 };
@@ -726,6 +351,7 @@ async function main(argv) {
   if (!fn) throw new B.BoardError(`unknown command "${cmd}"; run trackerboard help`);
   const args = parseArgs(rest);
   if (args.opts.help) return commands.help();
+  await S.initializeBackends();
   // Commands that change state run under the lock. Reads skip it: every
   // write replaces its file atomically, so a read never sees half of one.
   const dep = args.pos[0];

@@ -243,7 +243,7 @@ test("import --replace updates a board from regenerated JSON and logs the change
   assert.match(run(["import", "--from", file, "--replace"], { ok: false }).stderr, /phase R-1: unknown field\(s\) leg/);
 });
 
-test("github overlays open PRs and issues from gh", () => {
+test("github overlays PRs and open issues without advancing phase status", () => {
   const { dir, run } = sandbox();
   const gh = path.join(dir, "gh");
   fs.writeFileSync(gh, `#!/bin/sh
@@ -257,17 +257,55 @@ esac
   run(["create", "b", "--repo-url", "https://github.com/acme/widgets"]);
   run(["insert", "--phase", "R-1"]);
   run(["insert", "--phase", "R-2"]);
-  assert.match(run(["github", "--dry-run"], env).stdout, /R-1: todo → review, pr #41, issue #40\ndry run/);
+  assert.match(run(["github", "--dry-run"], env).stdout, /R-1: pr #41, issue #40\ndry run/);
   assert.match(run(["show", "--phase", "R-1"]).stdout, /\[todo\]/);
-  assert.match(run(["github"], env).stdout, /1 phase\(s\) updated from 1 open PRs and 1 open issues in acme\/widgets/);
-  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[review\][\s\S]*issue: #40[\s\S]*pr: #41/);
-  assert.match(fs.readFileSync(path.join(dir, "gh.log"), "utf8"), /pr list --json .*closingIssuesReferences --repo acme\/widgets --state open/);
+  assert.match(run(["github"], env).stdout, /1 phase\(s\) linked from 1 PRs and 1 open issues in acme\/widgets/);
+  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[todo\][\s\S]*issue: #40[\s\S]*pr: #41/);
+  assert.match(fs.readFileSync(path.join(dir, "gh.log"), "utf8"), /pr list --json .*closingIssuesReferences --repo acme\/widgets --state all/);
   assert.match(run(["github"], env).stdout, /no changes/);
 
   // --file overlays a generated file, so a regenerate + import does not undo the overlay.
   const file = path.join(dir, "gen.json");
   fs.writeFileSync(file, JSON.stringify({ repoUrl: "https://github.com/acme/widgets", waves: [{ id: "main", phases: [{ id: "R-1" }, { id: "R-2" }] }] }));
   assert.match(run(["github", "--file", file], env).stdout, /1 phase\(s\) in .*gen\.json updated/);
-  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "review");
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "todo");
   assert.match(run(["import", "b", "--from", file, "--replace"]).stdout, /already matches/);
+});
+
+test("migration verifies SQLite, detaches Claude publishing, and exports active data back to JSON", () => {
+  const state = sandbox();
+  const backendHome = path.join(state.dir, "backend-data");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "migrate-me"]);
+  state.run(["insert", "--phase", "P1", "--title", "before migration"]);
+  state.run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  state.run(["synced", "--version", "1"]);
+
+  fs.mkdirSync(backendHome, { recursive: true });
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({ backend: "github" }));
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+
+  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json → sqlite/);
+  assert.equal(fs.existsSync(path.join(backendHome, "repos")), false);
+
+  const moved = state.run(["migrate", "--to", "sqlite"], env);
+  assert.match(moved.stdout, /read-back verified/);
+  assert.match(state.run(["migrate", "--to", "sqlite"], env).stdout, /already uses sqlite/);
+  const recovery = moved.stdout.match(/recovery: (.+)/)[1];
+  assert.equal(fs.statSync(recovery).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");
+  assert.match(state.run(["show"], env).stdout, /P1 +todo +before migration/);
+
+  state.run(["update", "--phase", "P1", "--title", "edited in SQLite"], env);
+  const detached = state.run(["refresh"], { ...env, ok: false });
+  assert.equal(detached.status, 1);
+  assert.match(detached.stderr, /artifact was detached.*unavailable/);
+
+  const exported = state.run(["migrate", "--to", "json"], env);
+  assert.match(exported.stdout, /read-back verified/);
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show"], env).stdout, /P1 +todo +edited in SQLite/);
+  assert.match(state.run(["migrate", "--to", "json"], env).stdout, /already uses json/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.json"), "utf8")).waves[0].phases[0].title, "edited in SQLite");
 });

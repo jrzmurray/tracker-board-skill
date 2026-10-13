@@ -12,7 +12,7 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 // The board without fields that change on every save.
 export function content(board) {
   if (!board) return null;
-  const { updatedAt, layout, ...rest } = board;
+  const { updatedAt, layout, prStates, ...rest } = board;
   return rest;
 }
 

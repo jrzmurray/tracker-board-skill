@@ -19,9 +19,29 @@ test("unknown OAuth scopes are checked through Project capability before setup",
   const mock = new MockGitHub({ authScopes: [], projectListFailure: true });
   const { backend } = harness(mock);
   assert.throws(() => backend.create(makeBoard()), /gh auth refresh -s project/);
-  assert.deepEqual(mock.calls.filter(({ args }) => args[0] === "project").map(({ args }) => args[1]), ["list"]);
+  const projectListCall = mock.calls.find(({ args, input }) => args[0] === "api" && args[1] === "graphql"
+    && JSON.parse(input).query.includes("projectsV2(first: 100"));
+  assert.ok(projectListCall);
+  const ownerQuery = JSON.parse(projectListCall.input).query;
+  assert.match(ownerQuery, /repositoryOwner\(login: \$owner\)/);
+  assert.doesNotMatch(ownerQuery, /user\(login: \$owner\)|organization\(login: \$owner\)/);
   assert.equal(mock.writes().length, 0);
   assert.equal(mock.calls.some(({ args }) => args[0] === "auth" && args[1] === "token"), false);
+});
+
+test("reports GitHub API rate limits without suggesting an authorization change", () => {
+  const mock = new MockGitHub();
+  const originalRun = mock.run.bind(mock);
+  mock.run = (args, options) => {
+    if (args[0] === "api" && args[1] === "graphql") {
+      const error = new Error("GitHub API failed");
+      error.stderr = Buffer.from("API rate limit already exceeded");
+      throw error;
+    }
+    return originalRun(args, options);
+  };
+  const { backend } = harness(mock);
+  assert.throws(() => backend.create(makeBoard()), /GitHub API rate limit was reached.*Wait for the limit to reset/);
 });
 
 test("registered adapter initialization does not require gh until a GitHub operation", () => {
@@ -46,11 +66,11 @@ test("creates a private Project before adding board content and deletes an unver
   const { backend } = harness(mock);
   assert.throws(() => backend.create(makeBoard()), /still-empty setup placeholder was deleted.*gh auth refresh -s project/);
   const writes = mock.writes();
-  assert.deepEqual(writes.slice(0, 2).map(({ args }) => args.slice(0, 2)), [["project", "create"], ["project", "edit"]]);
-  assert.deepEqual(writes[1].args.slice(-2), ["--visibility", "PRIVATE"]);
+  assert.match(JSON.parse(writes[0].input).query, /createProjectV2\(/);
+  assert.equal(JSON.parse(writes[1].input).variables.input.public, false);
   assert.equal(mock.projects.size, 0);
-  assert.equal(writes.some(({ args }) => args[1] === "field-create" || args[1] === "item-create"), false);
-  assert.equal(writes.at(-1).args[1], "delete");
+  assert.equal(writes.some(({ args, input }) => args[0] === "api" && /createProjectV2Field|addProjectV2DraftIssue/.test(JSON.parse(input).query)), false);
+  assert.match(JSON.parse(writes.at(-1).input).query, /deleteProjectV2\(/);
 });
 
 test("maps all board fields, waves, logs, statuses, and phase details through Project metadata and draft items", () => {
@@ -61,6 +81,9 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   const project = [...mock.projects.values()][0];
   assert.equal(project.public, false);
   assert.equal(project.title, board.title);
+  assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-list"), false);
+  assert.ok(mock.calls.some(({ args, input }) => args[0] === "api" && args[1] === "graphql"
+    && JSON.parse(input).query.includes("fieldValues(first: 100)")));
   const metadata = metadataOf(project);
   assert.equal(metadata.version, 1);
   assert.equal(metadata.bootstrapComplete, true);
@@ -71,9 +94,12 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(Object.keys(metadata.phaseItems).length, STATUSES.length);
   const status = project.fields.find((field) => field.name === "Status");
   assert.deepEqual(status.options.map((option) => option.name), STATUSES);
+  assert.ok(status.options.every((option) => option.color && option.description));
+  assert.equal(status.options.find((option) => option.name === "todo").id, "DEFAULT-Todo");
   assert.deepEqual(project.fields.map((field) => field.name).sort(), ["Lane", "Order", "Owner", "Status", "Trackerboard ID", "Wave"].sort());
   assert.equal(project.items.length, STATUSES.length);
-  assert.equal(mock.writes().some(({ args }) => args[1] === "field-create" && mock.flag(args, "--name") === "Status"), false);
+  assert.equal(mock.writes().some(({ args, input }) => args[0] === "api" && /createProjectV2Field/.test(JSON.parse(input).query)
+    && JSON.parse(input).variables.input.name === "Status"), false);
   for (const [index, item] of project.items.entries()) {
     assert.equal(item.type, "DraftIssue");
     assert.equal(item.title, `Phase ${index + 1}`);
@@ -88,14 +114,22 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
     assert.equal(body.details.notes, "longer details");
   }
   assert.equal(hasIssueWrite(mock), false);
-  assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-create"), true);
+  assert.equal(mock.calls.some(({ args, input }) => args[0] === "api" && /addProjectV2DraftIssue/.test(JSON.parse(input).query)), true);
+});
+
+test("loads Project items beyond the first GraphQL page", () => {
+  const { backend } = harness();
+  const phases = Array.from({ length: 101 }, (_, index) => ({ id: `P${index + 1}`, title: `Phase ${index + 1}` }));
+  const board = makeBoard(phases);
+  backend.create(board);
+  assert.deepEqual(phasesOf(backend.load()).map((phase) => phase.id), phases.map((phase) => phase.id));
 });
 
 test("retries an interrupted draft-item create by stable phase ID without duplicating the Project item", () => {
   const mock = new MockGitHub({ failAfterDraftCreate: true });
   const { backend, context } = harness(mock);
   const board = makeBoard();
-  assert.throws(() => backend.create(board), /item-create failed/);
+  assert.throws(() => backend.create(board), /gh api graphql failed/);
   assert.equal([...mock.projects.values()][0].items.length, 1);
   const stableBoardId = context.local.githubProject.boardId;
   backend.create(board);
@@ -111,7 +145,7 @@ test("loads a partial Project snapshot and completes migration through save", ()
     { id: "P1", deps: [] },
     { id: "P2", deps: ["P1"] },
   ]);
-  assert.throws(() => backend.create(desired), /item-create failed/);
+  assert.throws(() => backend.create(desired), /gh api graphql failed/);
 
   const partial = backend.load();
   assert.deepEqual(phasesOf(partial).map((phase) => phase.id), ["P1"]);
@@ -168,7 +202,7 @@ test("reuses a generic empty Project after the create response is interrupted", 
   const mock = new MockGitHub({ failAfterProjectCreate: true });
   const { backend, context } = harness(mock);
   const board = makeBoard();
-  assert.throws(() => backend.create(board), /project create failed/);
+  assert.throws(() => backend.create(board), /gh api graphql failed/);
   const stableBoardId = context.local.githubProject.boardId;
   assert.equal(mock.projects.size, 1);
   backend.create(board);
@@ -176,7 +210,7 @@ test("reuses a generic empty Project after the create response is interrupted", 
   assert.equal(context.local.githubProject.boardId, stableBoardId);
   assert.equal([...mock.projects.values()][0].public, false);
   assert.deepEqual(backend.load(), board);
-  assert.equal(mock.writes().filter(({ args }) => args[1] === "create").length, 1);
+  assert.equal(mock.writes().filter(({ args, input }) => args[0] === "api" && JSON.parse(input).query.includes("createProjectV2(")).length, 1);
 });
 
 test("resolves a configured Project ID when no numeric Project number is provided", () => {
@@ -281,7 +315,7 @@ test("recomputes README metadata after a remote board edit observed before mutat
   let projectViews = 0;
   let injected = false;
   mock.run = (args, options) => {
-    if (args[0] === "project" && args[1] === "view" && ++projectViews === 5) {
+    if (args[0] === "api" && args[1] === "graphql" && JSON.parse(options.input).query.includes("title public readme createdAt") && ++projectViews === 5) {
       const project = [...mock.projects.values()][0];
       const metadata = metadataOf(project);
       metadata.fields.title = "Remote title update";
@@ -311,7 +345,8 @@ test("recomputes phase field values after an independent remote edit is observed
   let itemListsAfterManifest = 0;
   let injected = false;
   mock.run = (args, options) => {
-    if (armed && !injected && args[0] === "project" && args[1] === "item-list") {
+    const query = args[0] === "api" && args[1] === "graphql" ? JSON.parse(options.input).query : "";
+    if (armed && !injected && query.includes("items(first: 100")) {
       itemListsAfterManifest += 1;
       if (itemListsAfterManifest === 3) {
         mock.mutateField("P1", "Status", "blocked");
@@ -319,7 +354,7 @@ test("recomputes phase field values after an independent remote edit is observed
       }
     }
     const result = originalRun(args, options);
-    if (args[0] === "project" && args[1] === "edit" && args.includes("--readme")) armed = true;
+    if (args[0] === "api" && args[1] === "graphql" && JSON.parse(options.input).query.includes("updateProjectV2(input")) armed = true;
     return result;
   };
 
@@ -348,10 +383,9 @@ test("updates only the affected phase body and returns a new revision", () => {
   desired.waves[0].phases[0].notes = "revised details";
   const before = mock.writes().length;
   const nextRevision = backend.save(desired, { previous, expectedRevision: revision });
-  const changes = mock.writes().slice(before).filter(({ args }) => args[1] === "item-edit");
+  const changes = mock.writes().slice(before).filter(({ args, input }) => args[0] === "api" && JSON.parse(input).query.includes("updateProjectV2DraftIssue"));
   assert.equal(changes.length, 1);
-  assert.equal(changes[0].args.includes("--body"), true);
-  assert.equal(changes[0].args.includes("--field-id"), false);
+  assert.match(JSON.parse(changes[0].input).variables.input.body, /trackerboard:phase:v1/);
   assert.notEqual(nextRevision, revision);
   assert.deepEqual(backend.load(), desired);
 });
@@ -368,7 +402,7 @@ test("reconciles a lost draft-item delete response from the README pending-delet
   const expectedRevision = backend.revision();
   const desired = structuredClone(previous);
   desired.waves[0].phases.pop();
-  assert.throws(() => backend.save(desired, { previous, expectedRevision }), /item-delete failed/);
+  assert.throws(() => backend.save(desired, { previous, expectedRevision }), /gh api graphql failed/);
   assert.equal([...mock.projects.values()][0].items.length, 1);
   backend.save(desired, { previous, expectedRevision });
   assert.equal([...mock.projects.values()][0].items.length, 1);
@@ -388,7 +422,7 @@ test("re-adding a phase cancels its pending deletion after an interrupted delete
   const expectedRevision = backend.revision();
   const removing = structuredClone(previous);
   removing.waves[0].phases.pop();
-  assert.throws(() => backend.save(removing, { previous, expectedRevision }), /item-delete failed/);
+  assert.throws(() => backend.save(removing, { previous, expectedRevision }), /gh api graphql failed/);
 
   const project = [...mock.projects.values()][0];
   const retainedItemId = project.items.find((item) => fieldValue(item, "Trackerboard ID")?.text === "P2").id;

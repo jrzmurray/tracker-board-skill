@@ -79,12 +79,14 @@ Backend and local editor
   backend --set-binding KEY       Select and validate an existing saved backend target.
   migrate --to json|sqlite|github [--binding KEY] [--dry-run]
                                   Migrate and verify before switching this board's backend; KEY selects the destination.
-  serve [--port N]                Open a local, editable board at a loopback-only URL.
+  serve [--board NAME] [--port N] [--foreground]
+                                  Start/reuse the shared local editor and print the index and selected board URL.
+  serve status | stop             Inspect or stop the shared local editor.
 `;
 
 // ---------- args ----------
 
-const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
+const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -356,7 +358,7 @@ async function main(argv) {
   const dep = args.pos[0];
   const reads = cmd === "show" || cmd === "boards" || cmd === "ls" || cmd === "render" || cmd === "refresh" ||
     (cmd === "dep" && ["list", "graph", "ready"].includes(dep));
-  await (reads ? fn(args) : S.withLock(() => fn(args)));
+  await (reads || cmd === "serve" ? fn(args) : S.withLock(() => fn(args)));
 }
 
 main(process.argv.slice(2)).catch((e) => {

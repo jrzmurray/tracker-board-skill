@@ -4,8 +4,7 @@ import * as B from "../lib/board.mjs";
 import * as S from "../lib/store.mjs";
 import { dataHome, globalConfigPath, repoConfigPath, sqlitePath } from "../lib/config.mjs";
 import { sameContent } from "../lib/merge.mjs";
-import { EditorRevisionConflict, startEditorServer } from "../lib/serve.mjs";
-import { createEditorCallbacks } from "../lib/editor-operations.mjs";
+import { ensureSharedService, runServiceProcess, serviceStatus, serviceUrl, stopService } from "../lib/service-runtime.mjs";
 
 function assertGithubMigrationTarget(name, bindingKey, config) {
   if (bindingKey) return;
@@ -140,25 +139,45 @@ export function createBackendCommands({ boardName, rejectLeftovers, out }) {
       if (local.artifactUrl) out(`note: Claude artifact ${local.artifactUrl} is detached and read-only; refresh/pull/push are disabled`);
     },
 
-    async serve({ opts }) {
-      const name = boardName(opts);
+    async serve({ pos, opts }) {
+      const action = pos.shift();
+      const explicitBoard = opts.board == null ? null : String(opts.board);
+      delete opts.board;
+      const hasPort = opts.port != null;
       const port = opts.port == null ? 0 : Number(opts.port);
       delete opts.port;
-      rejectLeftovers(opts, []);
+      const foreground = !!opts.foreground;
+      delete opts.foreground;
+      const runServer = !!opts["run-server"];
+      delete opts["run-server"];
+      rejectLeftovers(opts, pos);
       if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new B.BoardError("--port must be an integer from 0 through 65535");
-      S.loadBoard(name);
-      const callbacks = createEditorCallbacks({ boardName: name, revisionConflict: () => new EditorRevisionConflict() });
-      const remote = S.backendConfig(name).backend === "github";
-      const editor = await startEditorServer({
-        boardName: name,
-        port,
-        ...callbacks,
-        // GitHub Projects have no compare-and-swap token. The adapter reconciles
-        // against its remembered baseline and rejects observed same-field races.
-        isRevisionCurrent: (expected, current) => remote || Object.is(expected, current),
-      });
-      out(`ok: serving ${name} at ${editor.url}`);
-      out("stop: press Ctrl-C");
+      if (runServer) {
+        if (action) throw new B.BoardError("internal server mode does not accept a serve subcommand");
+        return runServiceProcess({ port, boardName: explicitBoard });
+      }
+      if (action === "status") {
+        if (explicitBoard || hasPort || foreground) throw new B.BoardError("serve status does not accept --board, --port, or --foreground");
+        const result = await serviceStatus();
+        return out(result ? `service: running at ${result.record.origin}` : "service: stopped");
+      }
+      if (action === "stop") {
+        if (explicitBoard || hasPort || foreground) throw new B.BoardError("serve stop does not accept --board, --port, or --foreground");
+        return out(await stopService() ? "ok: stopped shared Trackerboard service" : "service: not running");
+      }
+      if (action) throw new B.BoardError(`unknown serve action ${JSON.stringify(action)}; use status or stop`);
+
+      let selectedBoard = explicitBoard;
+      if (!selectedBoard) {
+        try { selectedBoard = S.resolveBoardName(null); }
+        catch {}
+      }
+      const started = await ensureSharedService({ port, foreground, boardName: selectedBoard });
+      if (foreground && !started.attached) return;
+      const urls = await serviceUrl({ port, boardName: selectedBoard });
+      if (selectedBoard) out(`ok: serving ${selectedBoard} at ${urls.boardUrl}`);
+      out(`index: ${urls.indexUrl}`);
+      out("stop: trackerboard serve stop");
     },
   };
 }

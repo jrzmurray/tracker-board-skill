@@ -7,6 +7,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { STATUSES } from "../skills/trackerboard/scripts/lib/board.mjs";
 import { MAX_GITHUB_BYTES, createGitHubClient, createGitHubProjectBackend, verifyGitHubCli } from "../skills/trackerboard/scripts/lib/backends/github-project.mjs";
+import { graphql, run as runGitHub } from "../skills/trackerboard/scripts/lib/backends/github-project-core.mjs";
 import {
   MockGitHub, fieldValue, hasIssueWrite, harness, makeBoard, metadataOf,
   phasesOf, replacePhaseDependencies,
@@ -17,6 +18,29 @@ test("GitHub CLI version, login, and project scope are checked with precise reco
   assert.throws(() => verifyGitHubCli(fake("gh version 2.96.0", { hosts: { "github.com": [{ active: true, login: "octocat", scopes: ["repo"] }] } })), /gh auth refresh -s project/);
   assert.throws(() => verifyGitHubCli({ run(args) { if (args[0] === "--version") return "gh version 2.96.0"; throw new Error("not logged in"); } }), /gh auth login.*gh auth refresh -s project/);
   assert.equal(verifyGitHubCli(fake("gh version 2.102.0", { hosts: { "github.com": [{ active: true, scopes: ["project"] }] } })), true);
+});
+
+test("GitHub query failures are not misreported as missing Project scope", () => {
+  const syntaxError = 'Expected COLON, actual: RPAREN ("") at [1, 74]';
+  const processFailure = new Error("gh failed");
+  processFailure.stderr = `gh: ${syntaxError}`;
+  assert.throws(
+    () => runGitHub({ run() { throw processFailure; } }, ["api", "graphql"]),
+    (error) => error.message.includes(syntaxError) && !error.message.includes("auth refresh"),
+  );
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: syntaxError }] }); } }, "query { viewer { login } }", {}),
+    (error) => error.message.includes(syntaxError) && !error.message.includes("auth refresh"),
+  );
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: "Resource not accessible by integration" }] }); } }, "query { viewer { login } }", {}),
+    /auth refresh -s project/,
+  );
+  const fakeCredential = "gho_abcdefghijklmnopqrstuvwxyz0123456789";
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: `Bad request ${fakeCredential}` }] }); } }, "query { viewer { login } }", {}),
+    (error) => error.message.includes("[redacted]") && !error.message.includes(fakeCredential),
+  );
 });
 
 test("GitHub CLI commands have a finite timeout", (t) => {

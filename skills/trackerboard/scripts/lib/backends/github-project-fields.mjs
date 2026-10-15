@@ -12,7 +12,7 @@ export function createGitHubProjectFieldManager({ client, readRemote, rereadBefo
       singleSelectOptions: STATUSES.map((name) => ({ name })),
     };
     graphql(client,
-      "mutation($input: UpdateProjectV2FieldInput!) { updateProjectV2Field(input) { projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } } } }",
+      "mutation($input: UpdateProjectV2FieldInput!) { updateProjectV2Field(input: $input) { projectV2Field { ... on ProjectV2SingleSelectField { id name options { id name } } } } }",
       { input });
   }
 

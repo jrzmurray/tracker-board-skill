@@ -208,6 +208,8 @@ trackerboard migrate --to json|sqlite|github [--dry-run]
 
 `migrate` first writes a mode-0600 recovery snapshot, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
 
+Recovery copies and merge-base files remain available for manual recovery but are not active boards; `boards` and the shared `serve` index omit them.
+
 ### GitHub Projects backend
 
 Select `{ "backend": "github" }` in the global or repository config before creating a board, or run `trackerboard migrate --to github` for an existing board. The owner is derived from the repository remote or board `repoUrl`. Bootstrap creates a generic Project, immediately changes it to PRIVATE, and verifies that visibility before adding board data. If privacy cannot be verified, Trackerboard attempts to delete the still-empty placeholder and stops with permission guidance. `gh project create` has no visibility option, so the separate private edit and verification are intentional. The Project pointer and stable board ID are saved in the machine-local board index; no token is requested, logged, or stored.

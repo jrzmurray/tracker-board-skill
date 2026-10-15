@@ -30,7 +30,7 @@ test("shared store lock recovers immediately when its owner process exited", asy
   assert.equal(fs.existsSync(path.join(home, ".lock")), false);
 });
 
-test("board discovery excludes inactive base and migration recovery snapshots", async (t) => {
+test("board discovery excludes snapshots without reserving valid board-name suffixes", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-board-discovery-"));
   const previousHome = process.env.TRACKERBOARD_HOME;
   process.env.TRACKERBOARD_HOME = home;
@@ -42,19 +42,34 @@ test("board discovery excludes inactive base and migration recovery snapshots", 
 
   const boards = path.join(home, "boards");
   fs.mkdirSync(boards, { recursive: true });
-  for (const name of [
-    "active.json",
-    "legacy-unbound.json",
-    "active.local.json",
-    "active.base.json",
-    "active.recovery-2026-10-15T15-33-19-434Z.json",
-    "active.recovery-2026-10-15T15-33-19-434Z.local.json",
-  ]) fs.writeFileSync(path.join(boards, name), "{}");
+  const recoveryName = "active.recovery-2026-10-15T15-33-19-434Z";
+  const validRecoveryName = "legit.recovery-2026-10-15T15-33-19-434Z";
+  const contents = {
+    "active.json": { name: "active" },
+    "legacy-unbound.json": { name: "legacy-unbound" },
+    "active.local.json": {},
+    "active.base.json": { name: "active" },
+    [`${recoveryName}.json`]: { name: "active" },
+    [`${recoveryName}.local.json`]: {},
+    "legit.base.json": { name: "legit.base" },
+    [`${validRecoveryName}.json`]: { name: validRecoveryName },
+    "legit.base.local.json": {},
+    [`${validRecoveryName}.local.json`]: {},
+  };
+  for (const [name, value] of Object.entries(contents)) {
+    fs.writeFileSync(path.join(boards, name), JSON.stringify(value));
+  }
 
   const storeUrl = pathToFileURL(path.resolve("skills/trackerboard/scripts/lib/store.mjs")).href;
-  const { boardExists, listBoards } = await import(storeUrl);
-  assert.deepEqual(listBoards(), ["active", "legacy-unbound"]);
-  assert.equal(boardExists("active.recovery-2026-10-15T15-33-19-434Z"), false);
+  const { boardExists, createBoard, listBoards } = await import(storeUrl);
+  assert.deepEqual(listBoards(), ["active", "legacy-unbound", "legit.base", validRecoveryName]);
+  assert.equal(boardExists(recoveryName), false);
+  assert.equal(boardExists("legit.base"), true);
+  assert.equal(boardExists(validRecoveryName), true);
+  const snapshotPath = path.join(boards, `${recoveryName}.json`);
+  const snapshotBefore = fs.readFileSync(snapshotPath, "utf8");
+  assert.throws(() => createBoard(recoveryName), /contains an inactive snapshot for a different board/);
+  assert.equal(fs.readFileSync(snapshotPath, "utf8"), snapshotBefore, "a name collision must not delete the snapshot");
 });
 
 test("board locks serialize one board while allowing independent boards to proceed", async (t) => {

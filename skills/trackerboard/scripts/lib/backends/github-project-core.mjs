@@ -1,12 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { BoardError, STATUSES } from "../board.mjs";
+import { MAX_OPERATION_RECEIPTS } from "../operation-receipts.mjs";
 
 export const MIN_GH_VERSION = "2.96.0";
 export const MAX_GITHUB_BYTES = 60 * 1024;
+export { MAX_OPERATION_RECEIPTS };
 export const GENERIC_PROJECT_TITLE = "Trackerboard Setup";
 export const MAX_NODE_ID_BYTES = 128;
 export const AUTH_RECOVERY = "Run `gh auth refresh -s project` and retry.";
+const DEFAULT_GH_TIMEOUT_MS = 15_000;
+const MAX_GH_TIMEOUT_MS = 120_000;
 export const PROJECT_FIELDS = [
   { name: "Trackerboard ID", type: "TEXT" },
   { name: "Status", type: "SINGLE_SELECT", options: STATUSES },
@@ -23,16 +27,22 @@ function commandLabel(args) {
   return `gh ${args.slice(0, 2).join(" ")}`.trim();
 }
 
-export function createGitHubClient(executable = "gh") {
+export function createGitHubClient(executable = "gh", { timeoutMs = Number(process.env.TRACKERBOARD_GH_TIMEOUT_MS) } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) timeoutMs = DEFAULT_GH_TIMEOUT_MS;
+  timeoutMs = Math.min(timeoutMs, MAX_GH_TIMEOUT_MS);
   return {
     run(args, { input } = {}) {
       try {
         return execFileSync(executable, args, {
           encoding: "utf8",
           input,
+          timeout: timeoutMs,
           stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
       } catch (error) {
+        if (error.code === "ETIMEDOUT" || error.signal === "SIGTERM" && error.killed) {
+          throw new BoardError(`${commandLabel(args)} timed out after ${timeoutMs}ms. Retry when GitHub is available.`);
+        }
         const status = Number.isInteger(error.status) ? ` (exit ${error.status})` : "";
         throw new BoardError(`${commandLabel(args)} failed${status}. ${AUTH_RECOVERY}`);
       }
@@ -182,6 +192,10 @@ export function readMetadata(readme) {
     throw new BoardError("Project README Trackerboard metadata is invalid.");
   }
   if (metadata?.version !== 1 || !metadata.boardId) throw new BoardError("Project README Trackerboard metadata is incomplete.");
+  if (metadata.operations !== undefined && (!Array.isArray(metadata.operations) || metadata.operations.length > MAX_OPERATION_RECEIPTS || metadata.operations.some((entry) =>
+    !entry || typeof entry.id !== "string" || !/^[A-Za-z0-9_-]{16,120}$/.test(entry.id) || typeof entry.hash !== "string" || !/^[a-f0-9]{64}$/.test(entry.hash)))) {
+    throw new BoardError("Project README Trackerboard operation receipts are invalid.");
+  }
   return metadata;
 }
 
@@ -283,7 +297,7 @@ export function fieldByName(fields, name) {
   return fields.find((field) => String(field.name || "").toLowerCase() === name.toLowerCase()) || null;
 }
 
-export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = [], bootstrapComplete = false) {
+export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = [], bootstrapComplete = false, operations = []) {
   const phaseIds = [];
   const phaseLocations = {};
   for (const wave of board.waves) {
@@ -303,19 +317,20 @@ export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = []
     phaseLocations,
     phaseItems: Object.fromEntries(phaseIds.filter((id) => phaseItems[id]).map((id) => [id, phaseItems[id]])),
     pendingDelete: pendingDelete.filter((entry) => entry?.id && entry?.itemId),
+    operations: operations.slice(-MAX_OPERATION_RECEIPTS),
     log: board.log,
     updatedAt: board.updatedAt,
   };
 }
 
-export function assertSizes(board, boardId, phaseItems = {}, pendingDelete = []) {
+export function assertSizes(board, boardId, phaseItems = {}, pendingDelete = [], operations = []) {
   const bodies = new Map();
   for (const { phases } of board.waves) for (const phase of phases) bodies.set(phase.id, phaseBody(phase));
   const estimated = Object.fromEntries(board.waves.flatMap((wave) => wave.phases.map((phase) => [
     phase.id,
     phaseItems[phase.id] || "x".repeat(MAX_NODE_ID_BYTES),
   ])));
-  metadataBlock(makeMetadata(board, boardId, estimated, pendingDelete));
+  metadataBlock(makeMetadata(board, boardId, estimated, pendingDelete, false, operations));
   return bodies;
 }
 

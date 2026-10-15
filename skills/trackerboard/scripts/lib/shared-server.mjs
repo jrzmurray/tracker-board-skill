@@ -89,6 +89,7 @@ export async function startSharedBoardServer({
   const indexToken = capability();
   const active = new Map();
   const retired = new Set();
+  const retirements = new Set();
   let entries = [];
   let origin = "";
   let authority = "";
@@ -96,6 +97,14 @@ export async function startSharedBoardServer({
   let scanPromise = null;
   let stopping = false;
   let timer;
+
+  function retireWorker(worker) {
+    if (!worker) return;
+    const retirement = Promise.resolve().then(() => worker.close()).catch(() => {}).finally(() => {
+      retirements.delete(retirement);
+    });
+    retirements.add(retirement);
+  }
 
   const indexUrl = () => `${origin}/i/${indexToken}`;
   const boardUrl = (entry) => entry?.route ? `${origin}${entry.route}` : null;
@@ -152,6 +161,7 @@ export async function startSharedBoardServer({
   }
 
   async function scan() {
+    if (stopping) return entries;
     if (scanPromise) return scanPromise;
     if (Date.now() - lastScanAt < 2_000) return entries;
     scanPromise = (async () => {
@@ -159,37 +169,80 @@ export async function startSharedBoardServer({
         const names = store.listBoards();
         const records = [];
         for (const name of names) {
-          try {
-            const identity = store.ensureBoardIdentity(name);
-            const info = store.backendTargetInfo(name);
-            records.push({ name, boardId: identity.boardId, info });
-          } catch (error) {
-            records.push({ name, error });
-          }
+          records.push({ name });
         }
-        const inspection = store.inspectBackendTargets(names);
-        return { records, collisions: inspection.collisions };
+        return records;
       };
       const attempt = typeof store.tryWithLock === "function"
         ? await store.tryWithLock(discover)
         : { acquired: true, value: await store.withLock(discover) };
       if (!attempt.acquired) return entries;
-      const result = attempt.value;
-      const collisionNames = new Set(result.collisions.flatMap((collision) => collision.boards));
+      const captured = [];
+      for (const { name } of attempt.value) {
+        const capture = () => {
+          if (typeof store.boardExists === "function" && !store.boardExists(name)) {
+            return { name, absent: true };
+          }
+          const identity = store.ensureBoardIdentity(name);
+          const info = store.backendTargetInfo(name);
+          let title = null;
+          let loadError = null;
+          if (info.backend !== "github") {
+            try { title = store.loadBoard(name)?.title || name; }
+            catch (error) { loadError = error; }
+          }
+          return { name, boardId: identity.boardId, info, title, loadError };
+        };
+        try {
+          let boardAttempt;
+          if (typeof store.tryWithBoardLock === "function") {
+            boardAttempt = await store.tryWithBoardLock(name, capture);
+          } else if (typeof store.withBoardLock === "function") {
+            boardAttempt = { acquired: true, value: await store.withBoardLock(name, capture) };
+          } else {
+            // Small test doubles and older embedders can retain their global-lock
+            // contract; the real store always provides the nonblocking board lock.
+            boardAttempt = { acquired: true, value: capture() };
+          }
+          if (boardAttempt?.acquired === false) {
+            const previous = [...active.values()].find((entry) => entry.name === name);
+            captured.push({ name, busy: true, previous });
+            continue;
+          }
+          const value = boardAttempt?.acquired === true ? boardAttempt.value : boardAttempt;
+          if (!value?.absent) captured.push(value);
+        } catch (error) {
+          captured.push({ name, error });
+        }
+      }
+
+      const identities = new Map();
+      for (const item of captured) {
+        if (item.busy || item.error || !item.info?.identity) continue;
+        const key = JSON.stringify(item.info.identity);
+        const boards = identities.get(key) || [];
+        boards.push(item.name);
+        identities.set(key, boards);
+      }
+      const collisionNames = new Set([...identities.values()].filter((names) => names.length > 1).flat());
       const nextEntries = [];
       const seen = new Set();
-      for (const item of result.records) {
-        let status = item.error ? availability(item.error) : "available";
+      const workersToRetire = [];
+      for (const item of captured) {
+        if (item.busy) {
+          if (item.previous) {
+            seen.add(item.previous.boardId);
+            nextEntries.push(item.previous);
+          }
+          continue;
+        }
+        let status = item.error ? availability(item.error) : item.loadError ? availability(item.loadError) : "available";
         const backend = item.info?.backend || "unknown";
         const identityKey = item.info?.identity ? JSON.stringify(item.info.identity) : "";
         if (collisionNames.has(item.name)) status = "duplicate storage target";
         else if (!identityKey || item.info?.unresolved) status = "needs binding";
 
-        let discoveredTitle = null;
-        if (status === "available" && identityKey && backend !== "github") {
-          try { discoveredTitle = store.loadBoard(item.name)?.title || item.name; }
-          catch { status = "unavailable"; }
-        }
+        const discoveredTitle = item.title;
 
         const old = item.boardId ? active.get(item.boardId) : null;
         const oldRoute = old?.route || null;
@@ -249,7 +302,7 @@ export async function startSharedBoardServer({
         if (oldRoute && (!sameTarget || (!entry.route && status !== "unavailable"))) retired.add(oldRoute);
         if (oldWorker && (!sameTarget || !entry.route)) {
           old.draining = true;
-          await oldWorker.close().catch(() => {});
+          workersToRetire.push(oldWorker);
           entry.worker = null;
         }
         if (entry.boardId) active.set(entry.boardId, entry);
@@ -259,12 +312,13 @@ export async function startSharedBoardServer({
         if (!seen.has(boardId)) {
           if (previous.route) retired.add(previous.route);
           previous.draining = true;
-          await previous.worker?.close().catch(() => {});
+          if (previous.worker) workersToRetire.push(previous.worker);
           active.delete(boardId);
         }
       }
       entries = nextEntries;
       lastScanAt = Date.now();
+      for (const worker of workersToRetire) retireWorker(worker);
       return entries;
     })().finally(() => { scanPromise = null; });
     return scanPromise;
@@ -403,8 +457,11 @@ export async function startSharedBoardServer({
     async rescan() { return scan(); },
     async close() {
       clearInterval(timer);
+      stopping = true;
+      await scanPromise?.catch(() => {});
       for (const entry of active.values()) entry.draining = true;
-      await Promise.all([...active.values()].map((entry) => entry.worker?.close().catch(() => {})));
+      for (const entry of active.values()) retireWorker(entry.worker);
+      await Promise.all([...retirements]);
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     },
   };

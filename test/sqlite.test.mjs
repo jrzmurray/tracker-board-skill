@@ -123,6 +123,22 @@ test("save rejects stale expected revisions without changing the board", (t) => 
   assert.deepEqual(backend.load(), saved);
 });
 
+test("SQLite persists bounded log operation receipts atomically with the board", (t) => {
+  const { backend } = setup(t);
+  const board = sampleBoard();
+  backend.create(board);
+  const operation = { id: "operation-id-sqlite-test-0001", hash: "b".repeat(64) };
+  const logged = structuredClone(board);
+  logged.log.unshift({ at: "2026-10-14T12:00:00.000Z", text: "append once" });
+  assert.equal(backend.save(logged, { expectedRevision: 1, operation }), 2);
+  assert.deepEqual(backend.getOperation(operation.id), operation);
+
+  const duplicate = structuredClone(logged);
+  duplicate.log.unshift({ at: "2026-10-14T12:01:00.000Z", text: "append once" });
+  assert.equal(backend.save(duplicate, { expectedRevision: 1, operation }), 2);
+  assert.equal(backend.load().log.filter((entry) => entry.text === "append once").length, 1);
+});
+
 test("failed atomic replacement leaves the prior database readable and removes the temp file", (t) => {
   const { context, backend } = setup(t);
   const board = sampleBoard();

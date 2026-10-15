@@ -47,6 +47,8 @@ export function home() {
 }
 
 export const withLock = createStoreLock(home);
+export const withBoardLock = (name, fn) => withLock.forBoard(name)(fn);
+export const tryWithBoardLock = (name, fn) => withLock.forBoard(name).try(fn);
 export const tryWithLock = withLock.try;
 
 const boardsDir = () => path.join(home(), "boards");
@@ -217,18 +219,22 @@ export function loadBoard(name, options = {}) {
   return board;
 }
 
-export function saveBoard(board, { expectedRevision, previous } = {}) {
+export function saveBoard(board, { expectedRevision, previous, operation } = {}) {
   validate(board);
   const name = checkName(board.name);
   if (board.repoUrl) board.repoUrl = sanitizeRepositoryUrl(board.repoUrl);
   const adapter = backendFor(name);
   const before = previous || boardSnapshots.get(board) || latestSnapshots.get(name) || null;
   board.updatedAt = new Date().toISOString();
-  const revision = adapter.save(board, { previous: before, expectedRevision });
+  const revision = adapter.save(board, { previous: before, expectedRevision, ...(operation ? { operation } : {}) });
   const snapshot = structuredClone(board);
   boardSnapshots.set(board, snapshot);
   latestSnapshots.set(name, snapshot);
   return revision;
+}
+
+export function getOperation(name, id) {
+  return backendFor(name).getOperation?.(id) || null;
 }
 
 export function createBoard(name, opts, { binding = null } = {}) {

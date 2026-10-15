@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { BoardError } from "./board.mjs";
@@ -35,58 +36,64 @@ export function createStoreLock(home) {
     }
   }
 
-  function tryAcquire() {
-    const dir = path.join(home(), ".lock");
-    fs.mkdirSync(home(), { recursive: true });
-    try {
-      fs.mkdirSync(dir);
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      if (removeStaleLock(dir)) return tryAcquire();
-      return null;
-    }
-    try {
-      fs.writeFileSync(path.join(dir, "owner"), String(process.pid) + "\n", { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      throw error;
-    }
-    return () => fs.rmSync(dir, { recursive: true, force: true });
-  }
-
-  async function withLock(fn) {
-    const dir = path.join(home(), ".lock");
-    fs.mkdirSync(home(), { recursive: true });
-    const deadline = Date.now() + 15000;
-    for (;;) {
+  function makeLock(directoryPath) {
+    function tryAcquire() {
+      const directory = directoryPath();
+      fs.mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
       try {
-        fs.mkdirSync(dir);
-        try { fs.writeFileSync(path.join(dir, "owner"), String(process.pid) + "\n", { flag: "wx", mode: 0o600 }); }
-        catch (error) { fs.rmSync(dir, { recursive: true, force: true }); throw error; }
-        break;
+        fs.mkdirSync(directory, { mode: 0o700 });
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
-        if (removeStaleLock(dir)) continue;
-        if (Date.now() > deadline) throw new BoardError("another trackerboard command holds " + dir + "; retry, or remove it if no command is running");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        if (removeStaleLock(directory)) return tryAcquire();
+        return null;
+      }
+      try {
+        fs.writeFileSync(path.join(directory, "owner"), String(process.pid) + "\n", { flag: "wx", mode: 0o600 });
+      } catch (error) {
+        fs.rmSync(directory, { recursive: true, force: true });
+        throw error;
+      }
+      return () => fs.rmSync(directory, { recursive: true, force: true });
+    }
+
+    async function withLock(fn) {
+      const directory = directoryPath();
+      fs.mkdirSync(path.dirname(directory), { recursive: true, mode: 0o700 });
+      const deadline = Date.now() + 15000;
+      for (;;) {
+        try {
+          fs.mkdirSync(directory, { mode: 0o700 });
+          try { fs.writeFileSync(path.join(directory, "owner"), String(process.pid) + "\n", { flag: "wx", mode: 0o600 }); }
+          catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
+          break;
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          if (removeStaleLock(directory)) continue;
+          if (Date.now() > deadline) throw new BoardError("another trackerboard command holds " + directory + "; retry, or remove it if no command is running");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      try {
+        return await fn();
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
       }
     }
-    try {
-      return await fn();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+
+    // Discovery can skip a busy lock instead of blocking the HTTP event loop.
+    withLock.try = async (fn) => {
+      const release = tryAcquire();
+      if (!release) return { acquired: false };
+      try { return { acquired: true, value: await fn() }; }
+      finally { release(); }
+    };
+    return withLock;
   }
 
-  // Discovery only needs a consistent view of local bindings and board
-  // identities. It must not wait behind a GitHub write that holds the global
-  // store lock while synchronous gh CLI calls run in that board's worker.
-  withLock.try = async (fn) => {
-    const release = tryAcquire();
-    if (!release) return { acquired: false };
-    try { return { acquired: true, value: await fn() }; }
-    finally { release(); }
+  const withLock = makeLock(() => path.join(home(), ".lock"));
+  withLock.forBoard = (name) => {
+    const key = createHash("sha256").update(String(name)).digest("hex");
+    return makeLock(() => path.join(home(), ".board-locks", `${key}.lock`));
   };
-
   return withLock;
 }

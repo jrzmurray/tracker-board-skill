@@ -15,7 +15,7 @@ const previousDataHome = process.env.TRACKERBOARD_DATA_HOME;
 process.env.TRACKERBOARD_HOME = path.join(root, "home");
 process.env.TRACKERBOARD_DATA_HOME = path.join(root, "data");
 
-const [{ startSharedBoardServer }, S, C, serviceRuntime] = await Promise.all([
+const [{ startSharedBoardServer, controlRequest }, S, C, serviceRuntime] = await Promise.all([
   import("../skills/trackerboard/scripts/lib/shared-server.mjs"),
   import("../skills/trackerboard/scripts/lib/store.mjs"),
   import("../skills/trackerboard/scripts/lib/config.mjs"),
@@ -214,13 +214,77 @@ test("discovery skips the global lock while a slow backend write holds it", asyn
   assert.equal(server.boardUrl("lock-busy"), originalUrl, "the next discovery refreshes after the lock is released");
 });
 
+test("discovery skips a board lock held by removal without recreating its identity file", async (t) => {
+  await makeBoard("remove-discovery-race");
+  let notifyAttempt;
+  let attempted;
+  const store = {
+    ...S,
+    tryWithBoardLock(name, callback) {
+      if (name === "remove-discovery-race") notifyAttempt?.();
+      return S.tryWithBoardLock(name, callback);
+    },
+  };
+  const server = await startSharedBoardServer({ store });
+  t.after(() => server.close());
+  const originalUrl = server.boardUrl("remove-discovery-race");
+  assert.ok(originalUrl);
+  await waitForDiscoveryWindow();
+  attempted = new Promise((resolve) => { notifyAttempt = resolve; });
+
+  await S.withBoardLock("remove-discovery-race", async () => {
+    const scan = server.rescan();
+    await attempted;
+    S.removeBoard("remove-discovery-race");
+    await scan;
+    assert.equal(server.boardUrl("remove-discovery-race"), originalUrl, "a busy board keeps its prior published route during removal");
+  });
+
+  assert.equal(S.boardExists("remove-discovery-race"), false);
+  assert.equal(fs.existsSync(path.join(S.home(), "boards", "remove-discovery-race.local.json")), false);
+  await waitForDiscoveryWindow();
+  await server.rescan();
+  assert.equal(server.boardUrl("remove-discovery-race"), null);
+  assert.equal((await fetch(originalUrl)).status, 410);
+});
+
+test("discovery rechecks existence after listing before recreating removed board identity", async (t) => {
+  await makeBoard("stale-discovery-race");
+  let removeAfterListing = false;
+  const store = {
+    ...S,
+    async tryWithBoardLock(name, callback) {
+      if (name === "stale-discovery-race" && removeAfterListing) {
+        removeAfterListing = false;
+        await S.withBoardLock(name, () => S.removeBoard(name));
+      }
+      return S.tryWithBoardLock(name, callback);
+    },
+  };
+  const server = await startSharedBoardServer({ store });
+  t.after(() => server.close());
+  const originalUrl = server.boardUrl("stale-discovery-race");
+  assert.ok(originalUrl);
+
+  removeAfterListing = true;
+  await waitForDiscoveryWindow();
+  await server.rescan();
+
+  assert.equal(S.boardExists("stale-discovery-race"), false);
+  assert.equal(fs.existsSync(path.join(S.home(), "boards", "stale-discovery-race.local.json")), false);
+  assert.equal(server.boardUrl("stale-discovery-race"), null);
+  assert.equal((await fetch(originalUrl)).status, 410);
+});
+
 test("a newly detected duplicate backend target revokes the existing edit route", async (t) => {
   await makeBoard();
+  await makeBoard("same-target");
   let duplicate = false;
   const store = {
     ...S,
-    inspectBackendTargets(names) {
-      return { collisions: duplicate ? [{ boards: ["demo"], names }] : [] };
+    backendTargetInfo(name) {
+      const info = S.backendTargetInfo(name);
+      return duplicate ? { ...info, identity: { backend: "json", file: "/tmp/shared-board.json" } } : info;
     },
   };
   const server = await startSharedBoardServer({ store });
@@ -333,7 +397,7 @@ test("a command queued before board removal cannot recreate the removed board", 
   const snapshot = await getSnapshot(url);
 
   let pendingWrite;
-  await S.withLock(async () => {
+  await S.withBoardLock("remove-race", async () => {
     pendingWrite = fetch(`${url}/api/command`, {
       method: "POST",
       headers: {
@@ -347,7 +411,7 @@ test("a command queued before board removal cannot recreate the removed board", 
       }),
     });
     // Give the isolated worker time to receive the operation and wait on this
-    // lock before removal wins the serialized read-modify-write race.
+    // board lock before removal wins the serialized read-modify-write race.
     await new Promise((resolve) => setTimeout(resolve, 100));
     S.removeBoard("remove-race");
   });
@@ -408,6 +472,46 @@ test("target rebinding and removal retire the old route and close that board wor
   assert.equal(server.boardUrl("mutable"), null);
   assert.equal(workers[1].worker.closed, true);
   assert.equal((await fetch(newUrl)).status, 410);
+});
+
+test("rescan and control remain responsive while retired workers close asynchronously", async (t) => {
+  await makeBoard("retire-one");
+  await makeBoard("retire-two");
+  let present = true;
+  let releaseClose;
+  let closeStarted = 0;
+  const closeGate = new Promise((resolve) => { releaseClose = resolve; });
+  const store = { ...S, listBoards: () => present ? ["retire-one", "retire-two"] : [] };
+  const server = await startSharedBoardServer({
+    store,
+    workerFactory({ boardName }) {
+      return {
+        async snapshot() { return { board: { name: boardName, title: boardName }, revision: 1 }; },
+        async applyCommand() { return { board: { name: boardName, title: boardName }, revision: 2 }; },
+        async close() { closeStarted++; await closeGate; },
+      };
+    },
+  });
+  t.after(async () => { releaseClose(); await server.close(); });
+  const oldUrls = [server.boardUrl("retire-one"), server.boardUrl("retire-two")];
+  await Promise.all(oldUrls.map((url) => getSnapshot(url)));
+
+  present = false;
+  await waitForDiscoveryWindow();
+  const scan = server.rescan();
+  const scanFinished = await Promise.race([
+    scan.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 250)),
+  ]);
+  assert.equal(scanFinished, true, "rescan publishes route revocation without waiting for close");
+  assert.equal(server.boardUrl("retire-one"), null);
+  assert.equal(server.boardUrl("retire-two"), null);
+  assert.equal(closeStarted, 2);
+  assert.deepEqual(await controlRequest({ origin: server.origin, token: server.controlToken, op: "index" }), { url: server.indexUrl });
+  assert.deepEqual(await Promise.all(oldUrls.map(async (url) => (await fetch(url)).status)), [410, 410]);
+
+  releaseClose();
+  await scan;
 });
 
 test("CLI serve reuses one private runtime, reports status, and stops it", async () => {

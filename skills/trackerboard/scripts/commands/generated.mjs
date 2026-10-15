@@ -7,7 +7,10 @@ import { sameContent } from "../lib/merge.mjs";
 
 function runGhJson(args, { repo, limit = 1000, state } = {}) {
   const extra = [...(repo ? ["--repo", repo] : []), ...(state ? ["--state", state] : []), "--limit", String(limit)];
-  const result = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...extra], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const configuredTimeout = Number(process.env.TRACKERBOARD_GH_TIMEOUT_MS);
+  const timeout = Number.isSafeInteger(configuredTimeout) && configuredTimeout > 0 ? Math.min(configuredTimeout, 120_000) : 15_000;
+  const result = spawnSync(process.env.TRACKERBOARD_GH || "gh", [...args, ...extra], { encoding: "utf8", timeout, maxBuffer: 256 * 1024 * 1024 });
+  if (result.error?.code === "ETIMEDOUT") throw new B.BoardError(`gh ${args.slice(0, 2).join(" ")} timed out after ${timeout}ms. Retry when GitHub is available.`);
   if (result.error) throw new B.BoardError(`cannot run gh (${result.error.code === "ENOENT" ? "not installed" : result.error.message}); install the GitHub CLI and run \`gh auth login\``);
   if (result.status !== 0) throw new B.BoardError(`gh ${args.slice(0, 2).join(" ")} failed: ${result.stderr.trim()}`);
   try { return JSON.parse(result.stdout || "[]"); }

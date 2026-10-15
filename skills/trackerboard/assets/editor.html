@@ -390,9 +390,35 @@
       }
       function parseDependencies(value) { return value.split(/[\s,]+/).map((part) => part.trim()).filter(Boolean); }
 
+      async function logOperationKey(text) {
+        try {
+          const bytes = new TextEncoder().encode(`${base}\0${text}`);
+          const digest = await crypto.subtle.digest("SHA-256", bytes);
+          return `trackerboard:log:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+        } catch { return null; }
+      }
+
+      function newLogOperationId() {
+        if (crypto.randomUUID) return crypto.randomUUID();
+        return Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      }
+
       async function submitCommand(command, sourceForm = null) {
         if (!snapshot || busy) return;
         const drafts = captureDrafts(sourceForm, command);
+        let pendingLogKey = null;
+        if (command.type === "log.append") {
+          pendingLogKey = await logOperationKey(command.text);
+          let operationId = sourceForm?.dataset.operationText === command.text ? sourceForm.dataset.operationId : null;
+          try { operationId ||= pendingLogKey ? sessionStorage.getItem(pendingLogKey) : null; } catch {}
+          operationId ||= newLogOperationId();
+          command = { ...command, operationId };
+          if (sourceForm) {
+            sourceForm.dataset.operationId = operationId;
+            sourceForm.dataset.operationText = command.text;
+          }
+          try { if (pendingLogKey) sessionStorage.setItem(pendingLogKey, operationId); } catch {}
+        }
         busy = true;
         document.querySelectorAll("form").forEach((form) => setFormDisabled(form, true));
         setConnection("Saving…");
@@ -405,6 +431,7 @@
           const result = await response.json();
           if (response.status === 409) {
             conflictSnapshot = result.snapshot;
+            if (result.snapshot?.board && Object.hasOwn(result.snapshot, "revision")) snapshot = result.snapshot;
             dirty = true;
             setConnection("Conflict: the board changed elsewhere. Your edits are still here; reload to review the latest snapshot.", "conflict");
           } else if (!response.ok) {
@@ -412,6 +439,9 @@
           } else {
             snapshot = result;
             conflictSnapshot = null;
+            if (pendingLogKey) {
+              try { sessionStorage.removeItem(pendingLogKey); } catch {}
+            }
             const lost = renderBoard(snapshot.board, drafts);
             setConnection(lost.length
               ? `Saved. Unsaved edits could not be retained for removed records: ${lost.join(", ")}.`

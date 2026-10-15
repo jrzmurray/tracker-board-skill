@@ -41,6 +41,7 @@ export class MockGitHub {
     privateFailure = false,
     failAfterDraftCreate = false,
     failAfterProjectCreate = false,
+    failAfterReadmeSave = false,
     failAfterItemDelete = false,
     failBeforeItemDelete = false,
     authScopes = ["repo", "project"],
@@ -54,6 +55,7 @@ export class MockGitHub {
     this.privateFailure = privateFailure;
     this.failAfterDraftCreate = failAfterDraftCreate;
     this.failAfterProjectCreate = failAfterProjectCreate;
+    this.failAfterReadmeSave = failAfterReadmeSave;
     this.failAfterItemDelete = failAfterItemDelete;
     this.failBeforeItemDelete = failBeforeItemDelete;
     this.authScopes = authScopes;
@@ -193,7 +195,13 @@ export class MockGitHub {
         if (!this.privateFailure) project.public = this.flag(tail, "--visibility") !== "PRIVATE";
       }
       if (tail.includes("--title")) project.title = this.flag(tail, "--title");
-      if (tail.includes("--readme")) project.readme = this.flag(tail, "--readme");
+      if (tail.includes("--readme")) {
+        project.readme = this.flag(tail, "--readme");
+        if (this.failAfterReadmeSave) {
+          this.failAfterReadmeSave = false;
+          throw new Error("simulated lost README save response");
+        }
+      }
       return JSON.stringify(this.projectSummary(project));
     }
     if (root === "project" && command === "delete") {

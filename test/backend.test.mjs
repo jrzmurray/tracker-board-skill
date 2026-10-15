@@ -21,6 +21,7 @@ test("backend factory initializes once and exposes the synchronous CRUD contract
           return ++revision;
         },
         revision() { return revision; },
+        getOperation() { return null; },
         remove() { board = null; },
       };
     },
@@ -29,7 +30,7 @@ test("backend factory initializes once and exposes the synchronous CRUD contract
   await initializeBackendFactories();
   assert.equal(initialized, 1);
   const backend = openBackend("contract-test", {});
-  assert.deepEqual(Object.keys(backend).sort(), ["create", "load", "remove", "revision", "save"]);
+  assert.deepEqual(Object.keys(backend).sort(), ["create", "getOperation", "load", "remove", "revision", "save"]);
   backend.create({ name: "sample" });
   assert.deepEqual(backend.load(), { name: "sample" });
   assert.equal(backend.save({ name: "sample", title: "updated" }, { expectedRevision: 0 }), 1);
@@ -51,6 +52,15 @@ test("JSON remains the default backend and checks expected revisions", async () 
   assert.equal(S.saveBoard(loaded, { expectedRevision: 1 }), 2);
   assert.equal(S.loadBoard(board.name).title, "Updated");
   assert.throws(() => S.saveBoard({ ...loaded, title: "Stale" }, { expectedRevision: 1 }), /expected revision 1, current 2/);
+  const operation = { id: "operation-id-json-test-0001", hash: "a".repeat(64) };
+  const logged = S.loadBoard(board.name);
+  logged.log.unshift({ at: "2026-10-14T12:00:00.000Z", text: "append once" });
+  assert.equal(S.saveBoard(logged, { expectedRevision: 2, operation }), 3);
+  const duplicate = structuredClone(logged);
+  duplicate.log.unshift({ at: "2026-10-14T12:01:00.000Z", text: "append once" });
+  assert.equal(S.saveBoard(duplicate, { expectedRevision: 2, operation }), 3, "a durable receipt suppresses replay even with the stale revision");
+  assert.equal(S.loadBoard(board.name).log.filter((entry) => entry.text === "append once").length, 1);
+  assert.deepEqual(S.getOperation(board.name, operation.id), operation);
   assert.ok(fs.existsSync(path.join(root, "legacy-home", "boards", "default-json.json")));
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -1,5 +1,6 @@
 import * as B from "./board.mjs";
 import * as S from "./store.mjs";
+import { createHash } from "node:crypto";
 
 const boardFields = new Set(B.BOARD_FIELDS);
 
@@ -32,6 +33,10 @@ function changedInboundDependencies(base, current, phaseIds) {
     }
   }
   return false;
+}
+
+function logOperationHash(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function rebaseCommand(command, base, current, conflict) {
@@ -144,7 +149,7 @@ export function createEditorCallbacks({
   }
 
   async function applyCommand(command, expectedRevision) {
-    return store.withLock(() => {
+    const mutate = async () => {
       // A route can outlive a migration until the next discovery scan. Recheck
       // the pinned backend under the same lock as the read-modify-write so an
       // old capability cannot write into the new target (or recreate removal).
@@ -157,10 +162,11 @@ export function createEditorCallbacks({
       }
       const baseline = isRemote && expectedRevision != null ? remoteBases.get(expectedRevision) : before;
       if (isRemote && expectedRevision != null && !baseline && revision !== expectedRevision) throw revisionConflict();
-      const board = structuredClone(before);
       requireObject(command, "command");
       const args = isRemote ? rebaseCommand(command, baseline || before, before, revisionConflict) : command;
       if (!args) return { board: before, revision };
+      const board = structuredClone(before);
+      let duplicateOperation = false;
       try {
         switch (args.type) {
         case "board.update":
@@ -208,8 +214,16 @@ export function createEditorCallbacks({
           B.setDeps(board, args.phase, []);
           break;
         case "log.append":
-          requireFields(args, new Set(["type", "text"]), "log.append");
+          requireFields(args, new Set(["type", "text", "operationId"]), "log.append");
           if (typeof args.text !== "string" || !args.text.trim()) throw new B.BoardError("log.append needs non-empty text");
+          if (args.operationId !== undefined) {
+            const receipt = store.getOperation?.(boardName, args.operationId);
+            if (receipt) {
+              if (receipt.hash !== logOperationHash(args.text)) throw new B.BoardError("log operation id was already used for different text");
+              duplicateOperation = true;
+              break;
+            }
+          }
           B.appendLog(board, args.text);
           break;
           default:
@@ -220,11 +234,33 @@ export function createEditorCallbacks({
         if (error instanceof B.BoardError) error.status = 422;
         throw error;
       }
+      if (duplicateOperation) {
+        const result = { board: before, revision };
+        if (remote()) {
+          remoteSnapshot = result;
+          remoteSnapshotAt = now();
+          rememberRemote(result);
+        }
+        return structuredClone(result);
+      }
       let nextRevision;
       try {
-        nextRevision = store.saveBoard(board, { previous: baseline || before, expectedRevision });
+        nextRevision = await store.saveBoard(board, {
+          previous: baseline || before,
+          expectedRevision,
+          ...(args.type === "log.append" && args.operationId
+            ? { operation: { id: args.operationId, hash: logOperationHash(args.text) } }
+            : {}),
+        });
       } catch (error) {
-        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") throw revisionConflict();
+        if (isRemote) {
+          remoteSnapshot = null;
+          remoteSnapshotAt = 0;
+          remoteRead = null;
+        }
+        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") {
+          throw revisionConflict();
+        }
         throw error;
       }
       remoteSnapshot = null;
@@ -236,7 +272,21 @@ export function createEditorCallbacks({
         rememberRemote(result);
       }
       return structuredClone(result);
-    });
+    };
+    const guardedMutate = async () => {
+      try { return await mutate(); }
+      catch (error) {
+        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") {
+          remoteSnapshot = null;
+          remoteSnapshotAt = 0;
+          remoteRead = null;
+        }
+        throw error;
+      }
+    };
+    return typeof store.withBoardLock === "function"
+      ? store.withBoardLock(boardName, guardedMutate)
+      : store.withLock(guardedMutate);
   }
 
   return { loadSnapshot, applyCommand };

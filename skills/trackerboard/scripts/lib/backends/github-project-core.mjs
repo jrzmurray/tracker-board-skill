@@ -1,12 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { BoardError, STATUSES } from "../board.mjs";
+import { MAX_OPERATION_RECEIPTS } from "../operation-receipts.mjs";
 
 export const MIN_GH_VERSION = "2.96.0";
 export const MAX_GITHUB_BYTES = 60 * 1024;
+export { MAX_OPERATION_RECEIPTS };
 export const GENERIC_PROJECT_TITLE = "Trackerboard Setup";
 export const MAX_NODE_ID_BYTES = 128;
 export const AUTH_RECOVERY = "Run `gh auth refresh -s project` and retry.";
+const DEFAULT_GH_TIMEOUT_MS = 15_000;
+const MAX_GH_TIMEOUT_MS = 120_000;
 export const PROJECT_FIELDS = [
   { name: "Trackerboard ID", type: "TEXT" },
   { name: "Status", type: "SINGLE_SELECT", options: STATUSES },
@@ -23,18 +27,48 @@ function commandLabel(args) {
   return `gh ${args.slice(0, 2).join(" ")}`.trim();
 }
 
-export function createGitHubClient(executable = "gh") {
+function safeDiagnostic(value) {
+  return String(value || "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/gi, "[redacted]")
+    .replace(/(authorization\s*:\s*(?:token|bearer)\s+)\S+/gi, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^gh:\s*/i, "")
+    .slice(0, 240);
+}
+
+function githubFailure(args, error) {
+  const raw = `${error?.message || ""} ${error?.stderr || ""}`;
+  const message = raw.toLowerCase();
+  if (/rate limit|abuse detection/.test(message)) {
+    return new BoardError("GitHub API rate limit was reached. Wait for the limit to reset, then retry.");
+  }
+  if (/resource not accessible|permission denied|not authorized|missing.{0,30}project.{0,20}(?:scope|permission|capability)|project.{0,30}(?:scope|permission|capability).{0,30}(?:missing|denied)/.test(message)) {
+    return new BoardError(`${commandLabel(args)} was denied. ${AUTH_RECOVERY}`);
+  }
+  const status = Number.isInteger(error?.status) ? ` (exit ${error.status})` : "";
+  const detail = safeDiagnostic(error?.stderr || error?.message);
+  return new BoardError(`${commandLabel(args)} failed${status}.${detail ? ` ${detail}` : " Check the GitHub CLI output and retry."}`);
+}
+
+export function createGitHubClient(executable = "gh", { timeoutMs = Number(process.env.TRACKERBOARD_GH_TIMEOUT_MS) } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) timeoutMs = DEFAULT_GH_TIMEOUT_MS;
+  timeoutMs = Math.min(timeoutMs, MAX_GH_TIMEOUT_MS);
   return {
     run(args, { input } = {}) {
       try {
         return execFileSync(executable, args, {
           encoding: "utf8",
           input,
+          timeout: timeoutMs,
           stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
       } catch (error) {
-        const status = Number.isInteger(error.status) ? ` (exit ${error.status})` : "";
-        throw new BoardError(`${commandLabel(args)} failed${status}. ${AUTH_RECOVERY}`);
+        if (error.code === "ETIMEDOUT" || error.signal === "SIGTERM" && error.killed) {
+          throw new BoardError(`${commandLabel(args)} timed out after ${timeoutMs}ms. Retry when GitHub is available.`);
+        }
+        throw githubFailure(args, error);
       }
     },
   };
@@ -45,7 +79,7 @@ export function run(client, args, options) {
     return String(client.run(args, options) ?? "");
   } catch (error) {
     if (error instanceof BoardError) throw error;
-    throw new BoardError(`${commandLabel(args)} failed. ${AUTH_RECOVERY}`);
+    throw githubFailure(args, error);
   }
 }
 
@@ -182,6 +216,10 @@ export function readMetadata(readme) {
     throw new BoardError("Project README Trackerboard metadata is invalid.");
   }
   if (metadata?.version !== 1 || !metadata.boardId) throw new BoardError("Project README Trackerboard metadata is incomplete.");
+  if (metadata.operations !== undefined && (!Array.isArray(metadata.operations) || metadata.operations.length > MAX_OPERATION_RECEIPTS || metadata.operations.some((entry) =>
+    !entry || typeof entry.id !== "string" || !/^[A-Za-z0-9_-]{16,120}$/.test(entry.id) || typeof entry.hash !== "string" || !/^[a-f0-9]{64}$/.test(entry.hash)))) {
+    throw new BoardError("Project README Trackerboard operation receipts are invalid.");
+  }
   return metadata;
 }
 
@@ -283,7 +321,7 @@ export function fieldByName(fields, name) {
   return fields.find((field) => String(field.name || "").toLowerCase() === name.toLowerCase()) || null;
 }
 
-export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = [], bootstrapComplete = false) {
+export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = [], bootstrapComplete = false, operations = []) {
   const phaseIds = [];
   const phaseLocations = {};
   for (const wave of board.waves) {
@@ -303,19 +341,20 @@ export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = []
     phaseLocations,
     phaseItems: Object.fromEntries(phaseIds.filter((id) => phaseItems[id]).map((id) => [id, phaseItems[id]])),
     pendingDelete: pendingDelete.filter((entry) => entry?.id && entry?.itemId),
+    operations: operations.slice(-MAX_OPERATION_RECEIPTS),
     log: board.log,
     updatedAt: board.updatedAt,
   };
 }
 
-export function assertSizes(board, boardId, phaseItems = {}, pendingDelete = []) {
+export function assertSizes(board, boardId, phaseItems = {}, pendingDelete = [], operations = []) {
   const bodies = new Map();
   for (const { phases } of board.waves) for (const phase of phases) bodies.set(phase.id, phaseBody(phase));
   const estimated = Object.fromEntries(board.waves.flatMap((wave) => wave.phases.map((phase) => [
     phase.id,
     phaseItems[phase.id] || "x".repeat(MAX_NODE_ID_BYTES),
   ])));
-  metadataBlock(makeMetadata(board, boardId, estimated, pendingDelete));
+  metadataBlock(makeMetadata(board, boardId, estimated, pendingDelete, false, operations));
   return bodies;
 }
 
@@ -419,7 +458,10 @@ export function graphql(client, query, variables) {
   const response = parseJson(run(client, ["api", "graphql", "--input", "-"], {
     input: JSON.stringify({ query, variables }),
   }), "GraphQL");
-  if (response?.errors?.length) throw new BoardError(`GitHub Projects API rejected a request. ${AUTH_RECOVERY}`);
+  if (response?.errors?.length) {
+    const detail = response.errors.map((error) => error?.message).filter(Boolean).join("; ");
+    throw githubFailure(["api", "graphql"], { message: detail || "GitHub returned a GraphQL error." });
+  }
   return response?.data;
 }
 

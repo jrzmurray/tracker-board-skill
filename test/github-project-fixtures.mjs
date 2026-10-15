@@ -41,10 +41,12 @@ export class MockGitHub {
     privateFailure = false,
     failAfterDraftCreate = false,
     failAfterProjectCreate = false,
+    failAfterReadmeSave = false,
     failAfterItemDelete = false,
     failBeforeItemDelete = false,
     authScopes = ["repo", "project"],
     projectListFailure = false,
+    hideProjectItems = false,
   } = {}) {
     this.calls = [];
     this.projects = new Map();
@@ -54,10 +56,12 @@ export class MockGitHub {
     this.privateFailure = privateFailure;
     this.failAfterDraftCreate = failAfterDraftCreate;
     this.failAfterProjectCreate = failAfterProjectCreate;
+    this.failAfterReadmeSave = failAfterReadmeSave;
     this.failAfterItemDelete = failAfterItemDelete;
     this.failBeforeItemDelete = failBeforeItemDelete;
     this.authScopes = authScopes;
     this.projectListFailure = projectListFailure;
+    this.hideProjectItems = hideProjectItems;
   }
 
   run(args, options = {}) {
@@ -103,9 +107,34 @@ export class MockGitHub {
       const payload = JSON.parse(options.input);
       const input = payload.variables?.input;
       if (input?.fieldId) {
+        if (!payload.query.includes("updateProjectV2Field(input: $input)")) {
+          throw new Error("updateProjectV2Field must bind its input variable");
+        }
         const field = this.findField(input.fieldId);
         field.options = input.singleSelectOptions.map((option) => ({ id: `${field.id}-OPTION-${option.name}`, name: option.name }));
         return JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: field } } });
+      }
+      if (Array.isArray(payload.variables?.ids)) {
+        const nodes = payload.variables.ids.map((id) => {
+          for (const project of this.projects.values()) {
+            const item = project.items.find((candidate) => candidate.id === id);
+            if (!item) continue;
+            return {
+              id: item.id,
+              type: "DRAFT_ISSUE",
+              project: { id: project.id },
+              content: { __typename: "DraftIssue", id: item.content.id, title: item.title, body: item.body },
+              fieldValues: { nodes: item.fieldValues.map((value) => {
+                const field = project.fields.find((candidate) => candidate.id === value.fieldId);
+                if (value.text !== undefined) return { __typename: "ProjectV2ItemFieldTextValue", text: value.text, field: { id: field.id, name: field.name } };
+                if (value.number !== undefined) return { __typename: "ProjectV2ItemFieldNumberValue", number: value.number, field: { id: field.id, name: field.name } };
+                return { __typename: "ProjectV2ItemFieldSingleSelectValue", name: value.name, field: { id: field.id, name: field.name } };
+              }) },
+            };
+          }
+          return null;
+        });
+        return JSON.stringify({ data: { nodes } });
       }
       const project = this.findProject(payload.variables.id);
       if (payload.query.includes("fields(first: 100)")) {
@@ -127,7 +156,7 @@ export class MockGitHub {
       return JSON.stringify(field);
     }
     if (root === "project" && command === "item-list") {
-      return JSON.stringify(this.project(tail).items);
+      return JSON.stringify(this.hideProjectItems ? [] : this.project(tail).items);
     }
     if (root === "project" && command === "item-create") {
       const project = this.project(tail);
@@ -193,7 +222,13 @@ export class MockGitHub {
         if (!this.privateFailure) project.public = this.flag(tail, "--visibility") !== "PRIVATE";
       }
       if (tail.includes("--title")) project.title = this.flag(tail, "--title");
-      if (tail.includes("--readme")) project.readme = this.flag(tail, "--readme");
+      if (tail.includes("--readme")) {
+        project.readme = this.flag(tail, "--readme");
+        if (this.failAfterReadmeSave) {
+          this.failAfterReadmeSave = false;
+          throw new Error("simulated lost README save response");
+        }
+      }
       return JSON.stringify(this.projectSummary(project));
     }
     if (root === "project" && command === "delete") {

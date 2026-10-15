@@ -52,6 +52,27 @@ test("a branch binding is more specific than a repo binding", () => {
   assert.match(run(["show"]).stdout, /^repo-wide:/);
 });
 
+test("backend --set-binding validates a saved alias before changing the active target", () => {
+  const state = sandbox();
+  const other = path.join(state.dir, "other-repo");
+  fs.mkdirSync(other);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: other });
+  execFileSync("git", ["-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-q", "-m", "init"], { cwd: other });
+  state.run(["create", "select-me"]);
+  state.run(["bind", "--board", "select-me"], { cwd: other });
+  const localPath = path.join(state.home, "boards", "select-me.local.json");
+  const before = JSON.parse(fs.readFileSync(localPath, "utf8"));
+  const selected = before.bindings.find((binding) => binding.root === other);
+  assert.ok(selected);
+
+  const refused = state.run(["backend", "--board", "select-me", "--set-binding", "missing"], { ok: false });
+  assert.equal(refused.status, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(localPath, "utf8")), before);
+  assert.match(state.run(["backend", "--board", "select-me", "--set-binding", selected.key]).stdout, /now uses saved binding/);
+  assert.equal(JSON.parse(fs.readFileSync(localPath, "utf8")).storageBindingKey, selected.key);
+  assert.match(state.run(["show", "--board", "select-me"]).stdout, /^select-me:/);
+});
+
 test("unbound directory errors with guidance", () => {
   const { dir, run } = sandbox();
   run(["create", "x", "--no-bind"]);
@@ -150,7 +171,7 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   const call = (out) => JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
   const publishRemote = (mutate) => {
     const file = path.join(home, "remote", "b", "board", "state.json");
-    const doc = JSON.parse(fs.readFileSync(path.join(home, "boards", "b.base.json"), "utf8"));
+    const doc = JSON.parse(fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"));
     mutate(doc);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(doc));
@@ -277,6 +298,7 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   const backendHome = path.join(state.dir, "backend-data");
   const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
   state.run(["create", "migrate-me"]);
+  const initialBoardId = JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId;
   state.run(["insert", "--phase", "P1", "--title", "before migration"]);
   state.run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   state.run(["synced", "--version", "1"]);
@@ -285,16 +307,18 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({ backend: "github" }));
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
 
-  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json → sqlite/);
+  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json@[^ ]+ → sqlite@[^;]+/);
   assert.equal(fs.existsSync(path.join(backendHome, "repos")), false);
 
   const moved = state.run(["migrate", "--to", "sqlite"], env);
   assert.match(moved.stdout, /read-back verified/);
   assert.match(state.run(["migrate", "--to", "sqlite"], env).stdout, /already uses sqlite/);
   const recovery = moved.stdout.match(/recovery: (.+)/)[1];
+  assert.equal(path.dirname(recovery), path.join(state.home, "recovery"));
   assert.equal(fs.statSync(recovery).mode & 0o777, 0o600);
   assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
   assert.match(state.run(["show"], env).stdout, /P1 +todo +before migration/);
 
   state.run(["update", "--phase", "P1", "--title", "edited in SQLite"], env);
@@ -305,7 +329,115 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   const exported = state.run(["migrate", "--to", "json"], env);
   assert.match(exported.stdout, /read-back verified/);
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
   assert.match(state.run(["show"], env).stdout, /P1 +todo +edited in SQLite/);
   assert.match(state.run(["migrate", "--to", "json"], env).stdout, /already uses json/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.json"), "utf8")).waves[0].phases[0].title, "edited in SQLite");
+});
+
+test("unbound GitHub flows require repository identity before migration or bootstrap", () => {
+  const state = sandbox();
+  const backendHome = path.join(state.dir, "backend-data");
+  const gh = path.join(state.dir, "gh");
+  const ghLog = path.join(state.dir, "gh.log");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "unbound-github", "--no-bind", "--repo-url", "https://github.com/acme/widgets"], env);
+  state.run(["create", "unbound-github-no-repo", "--no-bind"], env);
+  fs.mkdirSync(backendHome, { recursive: true });
+  fs.writeFileSync(gh, `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghLog}"
+case "$1:$2" in
+  --version:) echo 'gh version v2.96.0' ;;
+  auth:status) echo '{"hosts":{"github.com":[{"active":true,"scopes":["project"]}]}}' ;;
+  project:list) echo '{"projects":[]}' ;;
+  project:view) echo 'stopped at fake project view' >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({
+    backend: "github",
+    github: { owner: "acme", executable: gh },
+  }));
+
+  const refused = state.run(["migrate", "--board", "unbound-github", "--to", "github"], { ...env, ok: false });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /saved repository identity and configured\/saved Project/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "unbound-github", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show", "--board", "unbound-github"], env).stdout, /^unbound-github:/);
+
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({
+    backend: "github",
+    github: { owner: "acme", projectNumber: 12, executable: gh },
+  }));
+  const refusedWithoutIdentity = state.run(["migrate", "--board", "unbound-github-no-repo", "--to", "github"], { ...env, ok: false });
+  assert.equal(refusedWithoutIdentity.status, 1);
+  assert.match(refusedWithoutIdentity.stderr, /saved repository identity and configured\/saved Project/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "unbound-github-no-repo", "--json"], env).stdout).backend, "json");
+
+  const createRefused = state.run(["create", "unbound-github-create-no-repo", "--no-bind"], { ...env, ok: false });
+  assert.equal(createRefused.status, 1);
+  assert.match(createRefused.stderr, /needs a saved repository identity/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(fs.existsSync(path.join(state.home, "boards", "unbound-github-create-no-repo.local.json")), false);
+
+  const createWithIdentity = state.run([
+    "create", "unbound-github-create-with-repo", "--no-bind", "--repo-url", "https://github.com/acme/roadmap",
+  ], { ...env, ok: false });
+  assert.equal(createWithIdentity.status, 1);
+  assert.doesNotMatch(createWithIdentity.stderr, /needs a saved repository identity/);
+  assert.match(fs.readFileSync(ghLog, "utf8"), /project view 12 --owner acme/);
+});
+
+test("migration selects its destination binding without switching sources before verification", () => {
+  const state = sandbox();
+  const secondRepo = path.join(state.dir, "repo-second");
+  fs.mkdirSync(secondRepo);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: secondRepo });
+  execFileSync("git", ["-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-q", "-m", "init"], { cwd: secondRepo });
+  const backendHome = path.join(state.dir, "backend-data");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "destination-test"], env);
+  state.run(["insert", "--phase", "P1", "--title", "source JSON"], env);
+  const sourceLocalPath = path.join(state.home, "boards", "destination-test.local.json");
+  const boardId = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8")).boardId;
+  state.run(["bind", "--board", "destination-test"], { ...env, cwd: secondRepo });
+  const localWithBothBindings = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8"));
+  const destinationBinding = localWithBothBindings.bindings.find((binding) => binding.root === secondRepo);
+  assert.ok(destinationBinding);
+  fs.mkdirSync(path.join(backendHome, "repos"), { recursive: true });
+  fs.writeFileSync(path.join(backendHome, "repos", `${destinationBinding.key}.json`), JSON.stringify({ backend: "sqlite", sqlite: { path: "destination.sqlite" } }));
+
+  const dryRun = state.run(["migrate", "--to", "sqlite", "--binding", destinationBinding.key, "--dry-run"], env).stdout;
+  assert.match(dryRun, new RegExp("json@[^ ]+ → sqlite@" + destinationBinding.key));
+  assert.equal(fs.existsSync(path.join(backendHome, "destination.sqlite")), false);
+
+  const migrated = state.run(["migrate", "--to", "sqlite", "--binding", destinationBinding.key], env);
+  assert.match(migrated.stdout, /read-back verified/);
+  const migratedLocal = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8"));
+  assert.equal(migratedLocal.storageBindingKey, destinationBinding.key);
+  assert.equal(migratedLocal.boardId, boardId);
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).bindingKey, destinationBinding.key);
+  assert.match(state.run(["show", "--board", "destination-test"], env).stdout, /source JSON/);
+
+  state.run(["create", "conflict-test", "--title", "source remains active"], env);
+  state.run(["insert", "--board", "conflict-test", "--phase", "P1", "--title", "source phase"], env);
+  state.run(["bind", "--board", "conflict-test"], { ...env, cwd: secondRepo });
+  const conflictLocalPath = path.join(state.home, "boards", "conflict-test.local.json");
+  const conflictBinding = JSON.parse(fs.readFileSync(conflictLocalPath, "utf8")).bindings.find((binding) => binding.root === secondRepo);
+  const alternateHome = path.join(state.dir, "alternate-home");
+  state.run(["create", "conflict-test", "--title", "preserve destination"], {
+    env: { TRACKERBOARD_HOME: alternateHome, TRACKERBOARD_DATA_HOME: backendHome },
+    cwd: secondRepo,
+  });
+  const refused = state.run(["migrate", "--board", "conflict-test", "--to", "sqlite", "--binding", conflictBinding.key], { ...env, ok: false });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /already contains a different board/);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "conflict-test", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show", "--board", "conflict-test"], env).stdout, /source phase/);
+  assert.match(state.run(["show", "--board", "conflict-test"], {
+    env: { TRACKERBOARD_HOME: alternateHome, TRACKERBOARD_DATA_HOME: backendHome },
+    cwd: secondRepo,
+  }).stdout, /conflict-test: preserve destination/);
 });

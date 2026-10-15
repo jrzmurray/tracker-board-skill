@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { BoardError, validate } from "../board.mjs";
 import { registerBackendFactory } from "../backend.mjs";
+import { appendOperation, assertOperationMatch, findOperation } from "../operation-receipts.mjs";
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
@@ -34,19 +35,22 @@ registerBackendFactory("json", {
         writeJson(boardPath, board);
         saveLocal({ ...loadLocal(), revision: Math.max(0, Number(loadLocal().revision) || 0) + 1 });
       },
-      save(board, { expectedRevision } = {}) {
+      save(board, { expectedRevision, operation } = {}) {
         validate(board);
         const currentLocal = loadLocal();
         const current = Number.isSafeInteger(currentLocal.revision) ? currentLocal.revision : 0;
+        const receipts = currentLocal.operations || [];
+        if (assertOperationMatch(receipts, operation)) return current;
         if (expectedRevision != null && expectedRevision !== current) {
           const error = new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
           error.code = "TRACKERBOARD_REVISION_CONFLICT";
           throw error;
         }
         writeJson(boardPath, board);
-        saveLocal({ ...currentLocal, revision: current + 1 });
+        saveLocal({ ...currentLocal, revision: current + 1, operations: operation ? appendOperation(receipts, operation) : receipts });
         return current + 1;
       },
+      getOperation(id) { return findOperation(loadLocal().operations, id); },
       revision() {
         const value = loadLocal().revision;
         return Number.isSafeInteger(value) ? value : 0;

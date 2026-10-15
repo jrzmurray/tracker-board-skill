@@ -76,14 +76,17 @@ Generated boards (the input format is board.schema.json)
 
 Backend and local editor
   backend [--json]                Show the resolved backend and configuration sources.
-  migrate --to json|sqlite|github [--dry-run]
-                                  Migrate and verify before switching this board's backend.
-  serve [--port N]                Open a local, editable board at a loopback-only URL.
+  backend --set-binding KEY       Select and validate an existing saved backend target.
+  migrate --to json|sqlite|github [--binding KEY] [--dry-run]
+                                  Migrate and verify before switching this board's backend; KEY selects the destination.
+  serve [--board NAME] [--port N] [--foreground]
+                                  Start/reuse the shared local editor and print the index and selected board URL.
+  serve status | stop             Inspect or stop the shared local editor.
 `;
 
 // ---------- args ----------
 
-const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help"]);
+const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -153,7 +156,7 @@ function bindBoard(opts) {
 const artifact = createArtifactCommands({ boardName, out });
 const { commit, cachedPrStates } = artifact;
 const display = createDisplayHelpers({ out, staleNote: artifact.staleNote });
-const generatedCommands = createGeneratedCommands({ boardName, out, commit, bindBoard });
+const generatedCommands = createGeneratedCommands({ boardName, out, commit });
 
 const commands = {
   help() { out(USAGE); },
@@ -164,13 +167,11 @@ const commands = {
   create({ pos, opts }) {
     const name = S.checkName(pos[0] || opts.board);
     const meta = take(opts, ["title", "repoUrl"]);
-    const board = S.createBoard(name, meta);
+    const binding = opts["no-bind"] ? null : S.makeBinding(S.context(), { branch: !!opts.branch });
+    const board = S.createBoard(name, meta, { binding });
     let where = "unbound";
-    if (!opts["no-bind"]) {
-      const ctx = S.context();
-      const b = S.makeBinding(ctx, { branch: !!opts.branch });
-      S.saveLocal(name, { ...S.loadLocal(name), bindings: [b] });
-      where = `bound to ${b.root}${b.branch ? ` @ ${b.branch}` : ""} (key ${b.key})`;
+    if (binding) {
+      where = `bound to ${binding.root}${binding.branch ? ` @ ${binding.branch}` : ""} (key ${binding.key})`;
     }
     const backend = S.backendConfig(name).backend;
     out(`ok: created board ${name}, ${where}${backend === "github" ? " with a private GitHub Project" : ` using ${backend}`}`);
@@ -357,7 +358,36 @@ async function main(argv) {
   const dep = args.pos[0];
   const reads = cmd === "show" || cmd === "boards" || cmd === "ls" || cmd === "render" || cmd === "refresh" ||
     (cmd === "dep" && ["list", "graph", "ready"].includes(dep));
-  await (reads ? fn(args) : S.withLock(() => fn(args)));
+  if (reads || cmd === "serve") return fn(args);
+
+  const boardScoped = new Set([
+    "bind", "unbind", "create", "remove", "insert", "update", "delete", "rm", "dep", "log",
+    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull",
+  ]);
+  let lockName = null;
+  if (boardScoped.has(cmd)) {
+    if (cmd === "create" || cmd === "remove") {
+      lockName = args.pos[0] || args.opts.board || null;
+    } else if (cmd === "import") {
+      lockName = args.pos[0] || args.opts.board || null;
+      if (!lockName && args.opts.from) {
+        try { lockName = JSON.parse(fs.readFileSync(args.opts.from, "utf8")).name || null; }
+        catch {}
+      }
+      if (!lockName && args.opts.replace) {
+        try { lockName = S.resolveBoardName(null); }
+        catch {}
+      }
+    } else {
+      lockName = args.opts.board || null;
+      if (!lockName) {
+        try { lockName = S.resolveBoardName(null); }
+        catch {}
+      }
+    }
+  }
+  if (lockName) await S.withBoardLock(lockName, () => fn(args));
+  else await S.withLock(() => fn(args));
 }
 
 main(process.argv.slice(2)).catch((e) => {

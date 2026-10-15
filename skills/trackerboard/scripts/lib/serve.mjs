@@ -155,8 +155,12 @@ function validateCommand(raw) {
       exactKeys(command, ["type", "phase"], command.type);
       return { type: command.type, phase: identifier(command.phase, "phase id") };
     case "log.append":
-      exactKeys(command, ["type", "text"], "log.append");
-      return { type: command.type, text: text(command.text, "log text", MAX_TEXT_LENGTH) };
+      exactKeys(command, ["type", "text", "operationId"], "log.append");
+      return {
+        type: command.type,
+        text: text(command.text, "log text", MAX_TEXT_LENGTH),
+        ...(command.operationId === undefined ? {} : { operationId: identifier(command.operationId, "log operation id") }),
+      };
     default:
       throw new EditorInputError(`unsupported command type: ${command.type}`);
   }
@@ -222,36 +226,77 @@ function requestPath(request) {
   catch { return ""; }
 }
 
+function normalizeRoutePrefix(routePrefix) {
+  if (routePrefix === undefined || routePrefix === null || routePrefix === "" || routePrefix === "/") return "";
+  if (typeof routePrefix !== "string") throw new TypeError("routePrefix must be a URL path prefix");
+  if (/[?#\\\u0000-\u001f\u007f]/.test(routePrefix)) throw new TypeError("routePrefix must not contain a query, fragment, backslash, or control character");
+  const parts = routePrefix.split("/").filter(Boolean);
+  if (parts.some((part) => part === "." || part === "..")) throw new TypeError("routePrefix must not contain dot segments");
+  return parts.length ? `/${parts.join("/")}` : "";
+}
+
+function routeOrigin(getOrigin) {
+  let value;
+  try { value = getOrigin(); }
+  catch { return null; }
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const parsed = new URL(value);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return null;
+    return { origin: parsed.origin, authority: parsed.host };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Start a capability-protected, IPv4 loopback editor server.
+ * Create a capability-protected editor route for a shared HTTP server.
  *
- * `loadSnapshot()` returns `{board, revision}`. `applyCommand(command,
- * expectedRevision)` must acquire the shared store/backend lock, recheck the
- * revision while holding it, apply this already validated command, then return
- * the new `{board, revision}`. Throw `EditorRevisionConflict` for a failed
- * compare-and-swap so a race that occurs after the HTTP precheck returns 409.
- * `isRevisionCurrent(expected, current)` defaults to strict equality; a remote
- * adapter can accept a best-effort revision here and let applyCommand perform
- * its backend-specific reconcile/conflict check under the shared lock.
+ * `routePrefix` scopes the handler beneath a caller-owned path. The editor page
+ * keeps the complete path as its API base, so the capability remains the final
+ * path segment and the page needs no mount-specific configuration. Its bearer
+ * value is the complete mounted path, matching the page's pathname-derived
+ * value. `getOrigin` is called for each request so a shared listener can supply
+ * its origin after it binds. Return `true` when the pathname is inside this
+ * route's prefix and the handler has produced a response, or `false` when
+ * another route may own it.
  */
-export async function startEditorServer({ boardName, port = 0, loadSnapshot, applyCommand, editorHtmlPath = DEFAULT_EDITOR_HTML, isRevisionCurrent = Object.is } = {}) {
+export function createEditorRouteHandler({
+  boardName,
+  token,
+  routePrefix = "",
+  getOrigin,
+  loadSnapshot,
+  applyCommand,
+  editorHtmlPath = DEFAULT_EDITOR_HTML,
+  isRevisionCurrent = Object.is,
+} = {}) {
   if (typeof boardName !== "string" || !boardName.trim()) throw new TypeError("boardName is required");
-  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new TypeError("port must be an integer from 0 through 65535");
+  if (typeof token !== "string" || !token.trim() || /[/?#\\\u0000-\u001f\u007f]/.test(token)) throw new TypeError("token must be a non-empty URL path segment");
+  if (typeof getOrigin !== "function") throw new TypeError("getOrigin must be a function");
   if (typeof loadSnapshot !== "function" || typeof applyCommand !== "function") throw new TypeError("loadSnapshot and applyCommand callbacks are required");
   if (typeof isRevisionCurrent !== "function") throw new TypeError("isRevisionCurrent must be a function");
-  const editorHtml = fs.readFileSync(path.resolve(editorHtmlPath), "utf8");
-  const token = randomBytes(32).toString("base64url");
 
-  let origin;
-  let authority;
-  const server = http.createServer(async (request, response) => {
+  const prefix = normalizeRoutePrefix(routePrefix);
+  const editorPath = `${prefix}/${token}`;
+  const bearerCapability = editorPath.slice(1);
+  const editorHtml = fs.readFileSync(path.resolve(editorHtmlPath), "utf8");
+
+  return async function handleEditorRoute(request, response) {
     const pathname = requestPath(request);
-    if (request.headers.host !== authority) {
-      sendJson(response, 421, { error: "request Host does not match this loopback editor" });
-      return;
+    if (prefix && pathname !== prefix && !pathname.startsWith(`${prefix}/`)) return false;
+
+    const binding = routeOrigin(getOrigin);
+    if (!binding) {
+      sendJson(response, 503, { error: "editor listener origin is not available" });
+      return true;
+    }
+    if (request.headers.host !== binding.authority) {
+      sendJson(response, 421, { error: "request Host does not match this editor" });
+      return true;
     }
 
-    if (pathname === `/${token}` && request.method === "GET") {
+    if (pathname === editorPath && request.method === "GET") {
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
@@ -260,10 +305,10 @@ export async function startEditorServer({ boardName, port = 0, loadSnapshot, app
         "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       });
       response.end(editorHtml);
-      return;
+      return true;
     }
 
-    if (pathname === `/${token}/api/snapshot` && request.method === "GET") {
+    if (pathname === `${editorPath}/api/snapshot` && request.method === "GET") {
       try {
         const snapshot = await loadSnapshot();
         if (!snapshotShape(snapshot)) throw new TypeError("loadSnapshot must return {board, revision}");
@@ -271,29 +316,29 @@ export async function startEditorServer({ boardName, port = 0, loadSnapshot, app
       } catch {
         sendJson(response, 500, { error: "could not load the current board snapshot" });
       }
-      return;
+      return true;
     }
 
-    if (pathname !== `/${token}/api/command`) {
+    if (pathname !== `${editorPath}/api/command`) {
       sendJson(response, 404, { error: "not found" });
-      return;
+      return true;
     }
     if (request.method !== "POST") {
       response.setHeader("Allow", "POST");
       sendJson(response, 405, { error: "method not allowed" });
-      return;
+      return true;
     }
-    if (!constantTimeMatch(request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7) : "", token)) {
+    if (!constantTimeMatch(request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7) : "", bearerCapability)) {
       sendJson(response, 401, { error: "a valid bearer capability is required" });
-      return;
+      return true;
     }
-    if (request.headers.origin !== origin) {
-      sendJson(response, 403, { error: "write Origin must exactly match this loopback editor" });
-      return;
+    if (request.headers.origin !== binding.origin) {
+      sendJson(response, 403, { error: "write Origin must exactly match this editor" });
+      return true;
     }
     if (!/^application\/json(?:\s*;|$)/i.test(request.headers["content-type"] || "")) {
       sendJson(response, 415, { error: "Content-Type must be application/json" });
-      return;
+      return true;
     }
 
     try {
@@ -306,7 +351,7 @@ export async function startEditorServer({ boardName, port = 0, loadSnapshot, app
       if (!snapshotShape(current)) throw new TypeError("loadSnapshot must return {board, revision}");
       if (!await isRevisionCurrent(body.expectedRevision, current.revision)) {
         sendJson(response, 409, { error: "board changed since this editor loaded it", snapshot: current });
-        return;
+        return true;
       }
       const next = await applyCommand(command, body.expectedRevision);
       if (!snapshotShape(next)) throw new TypeError("applyCommand must return {board, revision}");
@@ -327,6 +372,45 @@ export async function startEditorServer({ boardName, port = 0, loadSnapshot, app
         sendJson(response, 500, { error: "could not apply this board command" });
       }
     }
+    return true;
+  };
+}
+
+/**
+ * Start a capability-protected, IPv4 loopback editor server.
+ *
+ * `loadSnapshot()` returns `{board, revision}`. `applyCommand(command,
+ * expectedRevision)` must acquire the shared store/backend lock, recheck the
+ * revision while holding it, apply this already validated command, then return
+ * the new `{board, revision}`. Throw `EditorRevisionConflict` for a failed
+ * compare-and-swap so a race that occurs after the HTTP precheck returns 409.
+ * `isRevisionCurrent(expected, current)` defaults to strict equality; a remote
+ * adapter can accept a best-effort revision here and let applyCommand perform
+ * its backend-specific reconcile/conflict check under the shared lock.
+ */
+export async function startEditorServer({ boardName, port = 0, loadSnapshot, applyCommand, editorHtmlPath = DEFAULT_EDITOR_HTML, isRevisionCurrent = Object.is } = {}) {
+  if (typeof boardName !== "string" || !boardName.trim()) throw new TypeError("boardName is required");
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new TypeError("port must be an integer from 0 through 65535");
+  const token = randomBytes(32).toString("base64url");
+
+  let origin;
+  let authority;
+  const handleEditorRoute = createEditorRouteHandler({
+    boardName,
+    token,
+    routePrefix: "",
+    getOrigin: () => origin,
+    loadSnapshot,
+    applyCommand,
+    editorHtmlPath,
+    isRevisionCurrent,
+  });
+  const server = http.createServer(async (request, response) => {
+    if (request.headers.host !== authority) {
+      sendJson(response, 421, { error: "request Host does not match this loopback editor" });
+      return;
+    }
+    await handleEditorRoute(request, response);
   });
 
   await new Promise((resolve, reject) => {

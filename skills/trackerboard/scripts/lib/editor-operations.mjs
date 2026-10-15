@@ -1,5 +1,6 @@
 import * as B from "./board.mjs";
 import * as S from "./store.mjs";
+import { createHash } from "node:crypto";
 
 const boardFields = new Set(B.BOARD_FIELDS);
 
@@ -32,6 +33,10 @@ function changedInboundDependencies(base, current, phaseIds) {
     }
   }
   return false;
+}
+
+function logOperationHash(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function rebaseCommand(command, base, current, conflict) {
@@ -86,7 +91,14 @@ function rebaseCommand(command, base, current, conflict) {
   }
 }
 
-export function createEditorCallbacks({ boardName, revisionConflict }) {
+export function createEditorCallbacks({
+  boardName,
+  revisionConflict,
+  expectedTargetIdentity = null,
+  store = S,
+  remoteCacheMs = 60_000,
+  now = Date.now,
+}) {
   let remoteSnapshot = null;
   let remoteSnapshotAt = 0;
   let remoteRead = null;
@@ -100,40 +112,61 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
   }
 
   function remote() {
-    return S.backendConfig(boardName).backend === "github";
+    return store.backendConfig(boardName).backend === "github";
   }
 
-  function loadSnapshot() {
-    if (remote()) {
-      if (remoteSnapshot && Date.now() - remoteSnapshotAt < 60000) return structuredClone(remoteSnapshot);
-      if (remoteRead) return structuredClone(remoteRead);
+  function assertTargetCurrent() {
+    if (!store.boardExists(boardName)) throw revisionConflict("board was removed; reload the Trackerboard index");
+    if (!expectedTargetIdentity) return;
+    const current = store.backendTargetInfo(boardName).identity;
+    if (JSON.stringify(current) !== JSON.stringify(expectedTargetIdentity)) {
+      throw revisionConflict("board backend changed; reload the Trackerboard index");
     }
-    const board = S.loadBoard(boardName);
-    const snapshot = { board, revision: S.getRevision(boardName) };
+  }
+
+  async function loadSnapshot() {
+    assertTargetCurrent();
     if (remote()) {
-      remoteRead = snapshot;
-      remoteSnapshot = snapshot;
-      remoteSnapshotAt = Date.now();
-      rememberRemote(snapshot);
-      queueMicrotask(() => { remoteRead = null; });
+      if (remoteSnapshot && now() - remoteSnapshotAt < remoteCacheMs) return structuredClone(remoteSnapshot);
+      if (!remoteRead) {
+        remoteRead = Promise.resolve().then(() => {
+          assertTargetCurrent();
+          return Promise.resolve(store.loadBoard(boardName)).then((board) => ({ board, revision: store.getRevision(boardName) }));
+        });
+      }
+      try {
+        const snapshot = await remoteRead;
+        remoteSnapshot = snapshot;
+        remoteSnapshotAt = now();
+        rememberRemote(snapshot);
+        return structuredClone(snapshot);
+      } finally {
+        remoteRead = null;
+      }
     }
-    return structuredClone(snapshot);
+    const board = await store.loadBoard(boardName);
+    return { board, revision: store.getRevision(boardName) };
   }
 
   async function applyCommand(command, expectedRevision) {
-    return S.withLock(() => {
+    const mutate = async () => {
+      // A route can outlive a migration until the next discovery scan. Recheck
+      // the pinned backend under the same lock as the read-modify-write so an
+      // old capability cannot write into the new target (or recreate removal).
+      assertTargetCurrent();
       const isRemote = remote();
-      const before = S.loadBoard(boardName);
-      const revision = S.getRevision(boardName);
+      const before = store.loadBoard(boardName);
+      const revision = store.getRevision(boardName);
       if (!isRemote && expectedRevision != null && revision != null && expectedRevision !== revision) {
         throw revisionConflict();
       }
       const baseline = isRemote && expectedRevision != null ? remoteBases.get(expectedRevision) : before;
       if (isRemote && expectedRevision != null && !baseline && revision !== expectedRevision) throw revisionConflict();
-      const board = structuredClone(before);
       requireObject(command, "command");
       const args = isRemote ? rebaseCommand(command, baseline || before, before, revisionConflict) : command;
       if (!args) return { board: before, revision };
+      const board = structuredClone(before);
+      let duplicateOperation = false;
       try {
         switch (args.type) {
         case "board.update":
@@ -181,8 +214,16 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
           B.setDeps(board, args.phase, []);
           break;
         case "log.append":
-          requireFields(args, new Set(["type", "text"]), "log.append");
+          requireFields(args, new Set(["type", "text", "operationId"]), "log.append");
           if (typeof args.text !== "string" || !args.text.trim()) throw new B.BoardError("log.append needs non-empty text");
+          if (args.operationId !== undefined) {
+            const receipt = store.getOperation?.(boardName, args.operationId);
+            if (receipt) {
+              if (receipt.hash !== logOperationHash(args.text)) throw new B.BoardError("log operation id was already used for different text");
+              duplicateOperation = true;
+              break;
+            }
+          }
           B.appendLog(board, args.text);
           break;
           default:
@@ -193,11 +234,33 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
         if (error instanceof B.BoardError) error.status = 422;
         throw error;
       }
+      if (duplicateOperation) {
+        const result = { board: before, revision };
+        if (remote()) {
+          remoteSnapshot = result;
+          remoteSnapshotAt = now();
+          rememberRemote(result);
+        }
+        return structuredClone(result);
+      }
       let nextRevision;
       try {
-        nextRevision = S.saveBoard(board, { previous: baseline || before, expectedRevision });
+        nextRevision = await store.saveBoard(board, {
+          previous: baseline || before,
+          expectedRevision,
+          ...(args.type === "log.append" && args.operationId
+            ? { operation: { id: args.operationId, hash: logOperationHash(args.text) } }
+            : {}),
+        });
       } catch (error) {
-        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") throw revisionConflict();
+        if (isRemote) {
+          remoteSnapshot = null;
+          remoteSnapshotAt = 0;
+          remoteRead = null;
+        }
+        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") {
+          throw revisionConflict();
+        }
         throw error;
       }
       remoteSnapshot = null;
@@ -205,11 +268,25 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
       const result = { board, revision: nextRevision };
       if (remote()) {
         remoteSnapshot = result;
-        remoteSnapshotAt = Date.now();
+        remoteSnapshotAt = now();
         rememberRemote(result);
       }
       return structuredClone(result);
-    });
+    };
+    const guardedMutate = async () => {
+      try { return await mutate(); }
+      catch (error) {
+        if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") {
+          remoteSnapshot = null;
+          remoteSnapshotAt = 0;
+          remoteRead = null;
+        }
+        throw error;
+      }
+    };
+    return typeof store.withBoardLock === "function"
+      ? store.withBoardLock(boardName, guardedMutate)
+      : store.withLock(guardedMutate);
   }
 
   return { loadSnapshot, applyCommand };

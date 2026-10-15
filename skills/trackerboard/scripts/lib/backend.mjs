@@ -5,8 +5,9 @@ import { BoardError } from "./board.mjs";
 // and returns a synchronous CRUD adapter. Its context is:
 // {name, bindingKey, config, cwd, repoRoot, repoUrl, local, loadLocal, saveLocal,
 //  boardPath, dataHome}. The adapter methods are load() -> canonical board,
-// create(board), save(board, {previous, expectedRevision}) -> revision,
-// revision() -> opaque token, and remove(). `revision` is monotonic for local
+// create(board), save(board, {previous, expectedRevision, operation}) -> revision,
+// getOperation(id) -> idempotency receipt or null, revision() -> opaque token,
+// and remove(). `revision` is monotonic for local
 // backends; a remote backend can provide a best-effort token or null if its
 // service offers no compare-and-swap. Remote saves reread and reconcile before
 // applying narrow mutations; they never replace the whole board blindly.
@@ -32,7 +33,7 @@ export function openBackend(kind, context) {
   if (!factory) throw new BoardError(`backend adapter "${kind}" is unavailable`);
   if (!initialized.has(kind)) throw new BoardError(`backend adapter "${kind}" has not been initialized`);
   const adapter = factory.open(context);
-  for (const method of ["load", "create", "save", "revision", "remove"]) {
+  for (const method of ["load", "create", "save", "getOperation", "revision", "remove"]) {
     if (typeof adapter?.[method] !== "function") throw new TypeError(`${kind} backend is missing ${method}()`);
   }
   return adapter;

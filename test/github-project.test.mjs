@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { STATUSES } from "../skills/trackerboard/scripts/lib/board.mjs";
-import { MAX_GITHUB_BYTES, createGitHubProjectBackend, verifyGitHubCli } from "../skills/trackerboard/scripts/lib/backends/github-project.mjs";
+import { MAX_GITHUB_BYTES, createGitHubClient, createGitHubProjectBackend, verifyGitHubCli } from "../skills/trackerboard/scripts/lib/backends/github-project.mjs";
+import { graphql, run as runGitHub } from "../skills/trackerboard/scripts/lib/backends/github-project-core.mjs";
 import {
   MockGitHub, fieldValue, hasIssueWrite, harness, makeBoard, metadataOf,
   phasesOf, replacePhaseDependencies,
@@ -13,6 +18,41 @@ test("GitHub CLI version, login, and project scope are checked with precise reco
   assert.throws(() => verifyGitHubCli(fake("gh version 2.96.0", { hosts: { "github.com": [{ active: true, login: "octocat", scopes: ["repo"] }] } })), /gh auth refresh -s project/);
   assert.throws(() => verifyGitHubCli({ run(args) { if (args[0] === "--version") return "gh version 2.96.0"; throw new Error("not logged in"); } }), /gh auth login.*gh auth refresh -s project/);
   assert.equal(verifyGitHubCli(fake("gh version 2.102.0", { hosts: { "github.com": [{ active: true, scopes: ["project"] }] } })), true);
+});
+
+test("GitHub query failures are not misreported as missing Project scope", () => {
+  const syntaxError = 'Expected COLON, actual: RPAREN ("") at [1, 74]';
+  const processFailure = new Error("gh failed");
+  processFailure.stderr = `gh: ${syntaxError}`;
+  assert.throws(
+    () => runGitHub({ run() { throw processFailure; } }, ["api", "graphql"]),
+    (error) => error.message.includes(syntaxError) && !error.message.includes("auth refresh"),
+  );
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: syntaxError }] }); } }, "query { viewer { login } }", {}),
+    (error) => error.message.includes(syntaxError) && !error.message.includes("auth refresh"),
+  );
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: "Resource not accessible by integration" }] }); } }, "query { viewer { login } }", {}),
+    /auth refresh -s project/,
+  );
+  const fakeCredential = "gho_abcdefghijklmnopqrstuvwxyz0123456789";
+  assert.throws(
+    () => graphql({ run() { return JSON.stringify({ errors: [{ message: `Bad request ${fakeCredential}` }] }); } }, "query { viewer { login } }", {}),
+    (error) => error.message.includes("[redacted]") && !error.message.includes(fakeCredential),
+  );
+});
+
+test("GitHub CLI commands have a finite timeout", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-gh-timeout-"));
+  const executable = path.join(directory, "hung-gh");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(executable, "#!/usr/bin/env node\nsetTimeout(() => {}, 10_000);\n");
+  fs.chmodSync(executable, 0o700);
+
+  const started = Date.now();
+  assert.throws(() => createGitHubClient(executable, { timeoutMs: 40 }).run(["project", "view"]), /timed out after 40ms/);
+  assert.ok(Date.now() - started < 2_000, "a hung CLI process is killed within the configured bound");
 });
 
 test("unknown OAuth scopes are checked through Project capability before setup", () => {
@@ -91,6 +131,61 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-create"), true);
 });
 
+test("recovers a draft item by its returned ID when the Project item index is delayed", () => {
+  const mock = new MockGitHub({ hideProjectItems: true });
+  const { backend } = harness(mock);
+  const board = makeBoard();
+
+  backend.create(board);
+
+  assert.deepEqual(backend.load(), board);
+  assert.equal([...mock.projects.values()][0].items.length, 1);
+  assert.equal(mock.calls.filter(({ args }) => args[0] === "project" && args[1] === "item-create").length, 1);
+  assert.equal(mock.calls.some(({ args, input }) => args[0] === "api" && JSON.parse(input).query.includes("nodes(ids: $ids)")), true);
+  assert.equal(hasIssueWrite(mock), false);
+});
+
+test("log append retries are idempotent when GitHub saved the README manifest before losing its response", () => {
+  const mock = new MockGitHub();
+  const { backend } = harness(mock);
+  backend.create(makeBoard());
+  const before = backend.load();
+  const expectedRevision = backend.revision();
+  const operation = {
+    id: "operation-id-github-partial-01",
+    hash: createHash("sha256").update("record this once", "utf8").digest("hex"),
+  };
+  const desired = structuredClone(before);
+  desired.log.unshift({ at: "2026-10-14T12:00:00.000Z", text: "record this once" });
+  mock.failAfterReadmeSave = true;
+
+  assert.throws(
+    () => backend.save(desired, { previous: before, expectedRevision, operation }),
+    /project edit failed/,
+  );
+  const partial = backend.load();
+  assert.equal(partial.log.filter((entry) => entry.text === "record this once").length, 1);
+  assert.deepEqual(backend.getOperation(operation.id), operation);
+
+  backend.save(desired, { previous: before, expectedRevision, operation });
+  const retried = backend.load();
+  assert.equal(retried.log.filter((entry) => entry.text === "record this once").length, 1);
+});
+
+test("strips repository URL credentials and private URL components before local and Project persistence", () => {
+  const { backend, context, mock } = harness();
+  const board = makeBoard();
+  board.repoUrl = "https://agent:token-secret@github.com/acme/roadmap.git?access_token=query-secret#fragment-secret";
+  backend.create(board);
+
+  const project = [...mock.projects.values()][0];
+  const storedUrl = "https://github.com/acme/roadmap";
+  assert.equal(context.local.githubProject.repoUrl, storedUrl);
+  assert.equal(metadataOf(project).fields.repoUrl, storedUrl);
+  assert.doesNotMatch(project.readme, /token-secret|query-secret|fragment-secret/);
+  assert.doesNotMatch(JSON.stringify(context.local), /token-secret|query-secret|fragment-secret/);
+});
+
 test("retries an interrupted draft-item create by stable phase ID without duplicating the Project item", () => {
   const mock = new MockGitHub({ failAfterDraftCreate: true });
   const { backend, context } = harness(mock);
@@ -121,6 +216,19 @@ test("loads a partial Project snapshot and completes migration through save", ()
 
   assert.deepEqual(backend.load(), desired);
   assert.equal(metadataOf([...mock.projects.values()][0]).bootstrapComplete, true);
+});
+
+test("reads Project items as JSON without incompatible field selectors", () => {
+  const { backend, mock } = harness();
+  backend.create(makeBoard());
+
+  const itemLists = mock.calls.filter(({ args }) => args[0] === "project" && args[1] === "item-list");
+  assert.ok(itemLists.length > 0);
+  for (const { args } of itemLists) {
+    assert.equal(args.includes("--field-id"), false);
+    assert.equal(args.includes("--field"), false);
+    assert.equal(args[args.indexOf("--format") + 1], "json");
+  }
 });
 
 test("a second create cannot replace a completed board with an empty board", () => {
@@ -188,10 +296,13 @@ test("resolves a configured Project ID when no numeric Project number is provide
     ...context,
     config: { ...context.config, github: { projectId: project.id } },
     local: { bindings: [], artifactUrl: "" },
+    saveLocal(value) { this.local = structuredClone(value); },
   };
   const idOnlyBackend = createGitHubProjectBackend(idOnlyContext, mock);
 
   assert.deepEqual(idOnlyBackend.load(), board);
+  assert.equal(idOnlyContext.local.githubProject.projectId, project.id);
+  assert.equal(idOnlyContext.local.githubProject.projectNumber, project.number);
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "view" && args.includes("NaN")), false);
 });
 

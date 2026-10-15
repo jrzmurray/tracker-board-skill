@@ -99,9 +99,10 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       ...field,
       ...(graphqlFields.find((candidate) => candidate.id === field.id) || {}),
     }));
-    const itemArgs = ["project", "item-list", String(ref.number), "--owner", ref.owner, "--limit", "1000"];
-    for (const field of fields) if (field.id) itemArgs.push("--field-id", String(field.id));
-    itemArgs.push("--format", "json");
+    // `gh project item-list` includes Project field values in JSON output.
+    // GitHub CLI rejects combining --format json with --field-id/--field,
+    // so keep the read as one JSON request and resolve values by field name.
+    const itemArgs = ["project", "item-list", String(ref.number), "--owner", ref.owner, "--limit", "1000", "--format", "json"];
     const itemsParsed = parseJson(run(client, itemArgs), "project items");
     const items = listFromJson(itemsParsed, ["items", "projectItems"]);
     const metadata = readMetadata(readmeOf(details));

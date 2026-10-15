@@ -224,7 +224,7 @@ GitHub Project writes use reread-and-reconcile best effort because the API does 
 
 `trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is todo-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
 
-The current CLI starts one editor server for one selected board. The proposed design for sharing a single service across all boards is in [docs/shared-server-plan.md](docs/shared-server-plan.md); it is a plan, not implemented behavior.
+The CLI starts or reuses one local service for all discovered boards. Use `trackerboard serve --board NAME` to print a selected board's URL; without a selected board it still starts the shared service and prints the protected index URL. See [skills/trackerboard/AGENTS.md](skills/trackerboard/AGENTS.md) for commands and lifecycle details, and [docs/shared-server-plan.md](docs/shared-server-plan.md) for the design decisions and acceptance criteria.
 
 ## Data model
 

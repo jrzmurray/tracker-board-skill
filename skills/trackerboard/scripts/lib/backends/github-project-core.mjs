@@ -27,6 +27,31 @@ function commandLabel(args) {
   return `gh ${args.slice(0, 2).join(" ")}`.trim();
 }
 
+function safeDiagnostic(value) {
+  return String(value || "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b/gi, "[redacted]")
+    .replace(/(authorization\s*:\s*(?:token|bearer)\s+)\S+/gi, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^gh:\s*/i, "")
+    .slice(0, 240);
+}
+
+function githubFailure(args, error) {
+  const raw = `${error?.message || ""} ${error?.stderr || ""}`;
+  const message = raw.toLowerCase();
+  if (/rate limit|abuse detection/.test(message)) {
+    return new BoardError("GitHub API rate limit was reached. Wait for the limit to reset, then retry.");
+  }
+  if (/resource not accessible|permission denied|not authorized|missing.{0,30}project.{0,20}(?:scope|permission|capability)|project.{0,30}(?:scope|permission|capability).{0,30}(?:missing|denied)/.test(message)) {
+    return new BoardError(`${commandLabel(args)} was denied. ${AUTH_RECOVERY}`);
+  }
+  const status = Number.isInteger(error?.status) ? ` (exit ${error.status})` : "";
+  const detail = safeDiagnostic(error?.stderr || error?.message);
+  return new BoardError(`${commandLabel(args)} failed${status}.${detail ? ` ${detail}` : " Check the GitHub CLI output and retry."}`);
+}
+
 export function createGitHubClient(executable = "gh", { timeoutMs = Number(process.env.TRACKERBOARD_GH_TIMEOUT_MS) } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) timeoutMs = DEFAULT_GH_TIMEOUT_MS;
   timeoutMs = Math.min(timeoutMs, MAX_GH_TIMEOUT_MS);
@@ -43,8 +68,7 @@ export function createGitHubClient(executable = "gh", { timeoutMs = Number(proce
         if (error.code === "ETIMEDOUT" || error.signal === "SIGTERM" && error.killed) {
           throw new BoardError(`${commandLabel(args)} timed out after ${timeoutMs}ms. Retry when GitHub is available.`);
         }
-        const status = Number.isInteger(error.status) ? ` (exit ${error.status})` : "";
-        throw new BoardError(`${commandLabel(args)} failed${status}. ${AUTH_RECOVERY}`);
+        throw githubFailure(args, error);
       }
     },
   };
@@ -55,7 +79,7 @@ export function run(client, args, options) {
     return String(client.run(args, options) ?? "");
   } catch (error) {
     if (error instanceof BoardError) throw error;
-    throw new BoardError(`${commandLabel(args)} failed. ${AUTH_RECOVERY}`);
+    throw githubFailure(args, error);
   }
 }
 
@@ -434,7 +458,10 @@ export function graphql(client, query, variables) {
   const response = parseJson(run(client, ["api", "graphql", "--input", "-"], {
     input: JSON.stringify({ query, variables }),
   }), "GraphQL");
-  if (response?.errors?.length) throw new BoardError(`GitHub Projects API rejected a request. ${AUTH_RECOVERY}`);
+  if (response?.errors?.length) {
+    const detail = response.errors.map((error) => error?.message).filter(Boolean).join("; ");
+    throw githubFailure(["api", "graphql"], { message: detail || "GitHub returned a GraphQL error." });
+  }
   return response?.data;
 }
 

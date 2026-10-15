@@ -105,6 +105,9 @@ export class MockGitHub {
       const payload = JSON.parse(options.input);
       const input = payload.variables?.input;
       if (input?.fieldId) {
+        if (!payload.query.includes("updateProjectV2Field(input: $input)")) {
+          throw new Error("updateProjectV2Field must bind its input variable");
+        }
         const field = this.findField(input.fieldId);
         field.options = input.singleSelectOptions.map((option) => ({ id: `${field.id}-OPTION-${option.name}`, name: option.name }));
         return JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: field } } });

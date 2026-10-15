@@ -57,7 +57,8 @@ Backend configuration is machine-local. Config is merged key-by-key from global 
 ```text
 trackerboard backend [--json]
 trackerboard migrate --to json|sqlite|github [--dry-run]
-trackerboard serve [--board NAME] [--port N]
+trackerboard serve [--board NAME] [--port N] [--foreground]
+trackerboard serve status | stop
 trackerboard refresh-prs [--repo OWNER/NAME] [--limit N]
 ```
 
@@ -67,7 +68,7 @@ GitHub concurrency is best effort: the adapter rereads and reconciles before nar
 
 `backend` reports resolved configuration and active storage; it does not switch storage. Global/repository backend settings select the default for new boards, and board creation pins that backend in local metadata. Changing those defaults does not move existing boards. A legacy JSON board without a backend pointer stays on JSON while its JSON file exists; use migration to select and verify another backend. Migration verifies a read-back before switching; on success it leaves the old JSON file as an inactive recovery snapshot. Migration back to JSON exports the current active board, not stale snapshot data. A timestamped mode-0600 recovery copy is kept for each migration attempt. Migration detaches a linked artifact without a separate detach command; the artifact remains untouched as a read-only snapshot, and page/link/push/refresh/pull/synced is unavailable after migration.
 
-`trackerboard serve` provides an editable local browser view over the active backend. It binds only to `127.0.0.1`, prints a random per-run capability URL, and requires a bearer token plus same-origin validation for writes. It sends validated command operations, not whole-board replacements. JSON/SQLite changes appear on the next two-second poll; GitHub is cached for 60 seconds. `trackerboard refresh-prs` maintains derived PR badges: Draft=todo color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. A merge updates the badge but never the phase status; green means merged only.
+`trackerboard serve` starts or reuses one detached local service for the current Trackerboard home and data home. It binds only to `127.0.0.1` and prints the protected all-boards index URL plus the selected board URL, if any. The index URL grants access to every listed board, so keep it private. Run `trackerboard serve status` to inspect the service and `trackerboard serve stop` to stop it; `--foreground` is available for debugging. After a reboot, run `serve` again to rediscover durable boards and receive fresh per-run URLs. Browser writes require the board capability and same-origin validation; they send validated command operations, not whole-board replacements. JSON/SQLite changes appear on the next two-second poll; GitHub is cached for 60 seconds. `trackerboard refresh-prs` maintains derived PR badges: Draft=todo color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. A merge updates the badge but never the phase status; green means merged only.
 
 ## Optional Claude artifact publishing
 

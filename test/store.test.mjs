@@ -61,7 +61,8 @@ test("board discovery excludes snapshots without reserving valid board-name suff
   }
 
   const storeUrl = pathToFileURL(path.resolve("skills/trackerboard/scripts/lib/store.mjs")).href;
-  const { boardExists, createBoard, listBoards } = await import(storeUrl);
+  const { boardExists, createBoard, initializeBackends, listBoards, loadBase, removeBoard, saveBase } = await import(storeUrl);
+  await initializeBackends();
   assert.deepEqual(listBoards(), ["active", "legacy-unbound", "legit.base", validRecoveryName]);
   assert.equal(boardExists(recoveryName), false);
   assert.equal(boardExists("legit.base"), true);
@@ -70,6 +71,20 @@ test("board discovery excludes snapshots without reserving valid board-name suff
   const snapshotBefore = fs.readFileSync(snapshotPath, "utf8");
   assert.throws(() => createBoard(recoveryName), /contains an inactive snapshot for a different board/);
   assert.equal(fs.readFileSync(snapshotPath, "utf8"), snapshotBefore, "a name collision must not delete the snapshot");
+
+  const parent = "legacy-unbound";
+  const child = `${parent}.base`;
+  const oldBasePath = path.join(boards, `${child}.json`);
+  const legacyBase = { name: parent, title: "old merge base" };
+  fs.writeFileSync(oldBasePath, JSON.stringify(legacyBase));
+  createBoard(child);
+  assert.equal(fs.existsSync(oldBasePath), true, "the legacy base path is now the suffixed board's JSON file");
+  assert.equal(loadBase(parent).title, "old merge base", "legacy base data is moved to the separate base namespace");
+  saveBase(parent, { ...legacyBase, title: "updated merge base" });
+  assert.equal(loadBase(parent).title, "updated merge base");
+  removeBoard(parent);
+  assert.equal(JSON.parse(fs.readFileSync(oldBasePath, "utf8")).name, child, "removing the parent must preserve its suffixed board");
+  assert.equal(fs.existsSync(path.join(home, "bases", `${parent}.json`)), false, "removing the parent cleans only its own merge base");
 });
 
 test("board locks serialize one board while allowing independent boards to proceed", async (t) => {

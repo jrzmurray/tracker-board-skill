@@ -208,7 +208,7 @@ trackerboard migrate --to json|sqlite|github [--dry-run]
 
 `migrate` first writes a mode-0600 recovery snapshot under `~/.trackerboard/recovery/`, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
 
-Recovery copies and merge-base files remain available for manual recovery but are not active boards; `boards` and the shared `serve` index omit them. Older snapshots in `boards/` are identified by their stored board name, so legitimate names ending in `.base` or a recovery-like suffix remain discoverable.
+Recovery copies and merge-base files remain available for manual recovery but are not active boards; `boards` and the shared `serve` index omit them. Older recovery snapshots in `boards/` are identified by their stored board name, so legitimate names ending in a recovery-like suffix remain discoverable. Merge bases now live under `bases/`; old `boards/<name>.base.json` files are read and moved safely, and are removed only when their stored board name matches the owning board. This keeps names ending in `.base` distinct from another board's merge base.
 
 ### GitHub Projects backend
 
@@ -248,7 +248,7 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 | --- | --- |
 | `boards/<name>.json` | the board |
 | `boards/<name>.local.json` | this machine's bindings, backend override, artifact URL/version and local backend metadata |
-| `boards/<name>.base.json` | the published document as of the recorded db version (the merge base for `pull`) |
+| `bases/<name>.json` | the published document as of the recorded db version (the merge base for `pull`) |
 | `recovery/<name>-<timestamp>.json` | mode-0600 pre-migration recovery copies; not active boards |
 | `remote/<name>/` | where `refresh` has `ArtifactData get` save the published document |
 | `out/docs/<name>-<hash>.json` | the db document written on each change, one file per snapshot |

@@ -171,7 +171,7 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   const call = (out) => JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
   const publishRemote = (mutate) => {
     const file = path.join(home, "remote", "b", "board", "state.json");
-    const doc = JSON.parse(fs.readFileSync(path.join(home, "boards", "b.base.json"), "utf8"));
+    const doc = JSON.parse(fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"));
     mutate(doc);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(doc));

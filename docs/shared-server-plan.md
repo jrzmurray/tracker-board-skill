@@ -14,6 +14,10 @@ The current `serve` command resolves one board name, loads its backend, and star
 
 Board discovery is a synchronous scan of `TRACKERBOARD_HOME/boards`. Backend selection currently depends on the working directory's repository binding key; SQLite paths use that key, while the GitHub Project pointer is in the board's local index. A shared process cannot safely infer a board's target from the directory that happened to launch it. Pinning one storage target per board is therefore a prerequisite, not a detail to defer to the server implementation.
 
+## Review closure
+
+The multi-board design review is resolved in the decisions and delivery gates below; these points are requirements, not implementation-time choices. Backend opening uses the saved binding root and repository identity, branch bindings alias one canonical repository target, and unbound boards use global plus board-local configuration only. Duplicate routes are detected by concrete backend-record identity. Board capabilities survive rescans and temporary outages, while removal revokes the route with `410`; backend polling and GitHub caching are specified separately. A lifetime OS lock is distinct from storage mutation locks, and the authenticated control channel alone can return scoped URLs. The protected index is intentionally an all-board grant. Discovery is bounded, failed backends back off independently, and removal drains or rejects writes under the storage lock.
+
 ## Decisions
 
 ### Board identity and backend target

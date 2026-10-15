@@ -180,6 +180,19 @@ test("loads a partial Project snapshot and completes migration through save", ()
   assert.equal(metadataOf([...mock.projects.values()][0]).bootstrapComplete, true);
 });
 
+test("reads Project items as JSON without incompatible field selectors", () => {
+  const { backend, mock } = harness();
+  backend.create(makeBoard());
+
+  const itemLists = mock.calls.filter(({ args }) => args[0] === "project" && args[1] === "item-list");
+  assert.ok(itemLists.length > 0);
+  for (const { args } of itemLists) {
+    assert.equal(args.includes("--field-id"), false);
+    assert.equal(args.includes("--field"), false);
+    assert.equal(args[args.indexOf("--format") + 1], "json");
+  }
+});
+
 test("a second create cannot replace a completed board with an empty board", () => {
   const { backend, mock, context } = harness();
   const original = makeBoard();

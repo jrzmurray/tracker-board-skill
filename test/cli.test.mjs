@@ -314,6 +314,7 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   assert.match(moved.stdout, /read-back verified/);
   assert.match(state.run(["migrate", "--to", "sqlite"], env).stdout, /already uses sqlite/);
   const recovery = moved.stdout.match(/recovery: (.+)/)[1];
+  assert.equal(path.dirname(recovery), path.join(state.home, "recovery"));
   assert.equal(fs.statSync(recovery).mode & 0o777, 0o600);
   assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");

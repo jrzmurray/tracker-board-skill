@@ -98,7 +98,7 @@ export function createBackendCommands({ boardName, rejectLeftovers, out }) {
       }
 
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const recovery = path.join(S.home(), "boards", `${name}.recovery-${stamp}.json`);
+      const recovery = path.join(S.home(), "recovery", `${name}-${stamp}.json`);
       fs.mkdirSync(path.dirname(recovery), { recursive: true, mode: 0o700 });
       fs.writeFileSync(recovery, `${JSON.stringify(board, null, 2)}\n`, { flag: "wx", mode: 0o600 });
       if (!targetBoard) target.create(board);

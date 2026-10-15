@@ -59,7 +59,6 @@ const basePath = (name) => path.join(boardsDir(), `${name}.base.json`);
 export const remoteDir = (name) => path.join(home(), "remote", name);
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
-const RECOVERY_SNAPSHOT_NAME_RE = /\.recovery-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
 export function checkName(name) {
   if (!name || !NAME_RE.test(name)) throw new BoardError(`invalid board name "${name}" (letters, digits, . _ -)`);
@@ -82,6 +81,19 @@ function writeJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
+function hasActiveBoardJson(name) {
+  const file = boardPath(name);
+  if (!fs.existsSync(file)) return false;
+  try {
+    const board = readJson(file, null);
+    return !board?.name || board.name === name;
+  } catch {
+    // Keep malformed board files discoverable so commands can report the
+    // underlying data error instead of silently hiding a user's board.
+    return true;
+  }
+}
+
 export function listBoards() {
   let files = [];
   try {
@@ -91,21 +103,20 @@ export function listBoards() {
   }
   const names = new Set(files
     .filter((file) => file.endsWith(".json")
-      && !file.endsWith(".local.json")
-      && !file.endsWith(".base.json")
-      && !RECOVERY_SNAPSHOT_NAME_RE.test(file.slice(0, -5)))
-    .map((file) => file.slice(0, -5)));
+      && !file.endsWith(".local.json"))
+    .map((file) => file.slice(0, -5))
+    .filter(hasActiveBoardJson));
   for (const file of files.filter((entry) => entry.endsWith(".local.json"))) {
     const name = file.slice(0, -11);
-    if (!RECOVERY_SNAPSHOT_NAME_RE.test(name)) names.add(name);
+    if (!fs.existsSync(boardPath(name)) || hasActiveBoardJson(name)) names.add(name);
   }
   return [...names].sort();
 }
 
 export function boardExists(name) {
   const checked = checkName(name);
-  if (RECOVERY_SNAPSHOT_NAME_RE.test(checked)) return false;
-  return fs.existsSync(boardPath(checked)) || fs.existsSync(localPath(checked));
+  if (fs.existsSync(boardPath(checked))) return hasActiveBoardJson(checked);
+  return fs.existsSync(localPath(checked));
 }
 
 function boardRepoUrl(name) {
@@ -248,8 +259,12 @@ export function getOperation(name, id) {
 }
 
 export function createBoard(name, opts, { binding = null } = {}) {
+  const checkedName = checkName(name);
+  if (fs.existsSync(boardPath(checkedName)) && !hasActiveBoardJson(checkedName)) {
+    throw new BoardError(`cannot create board "${checkedName}": ${boardPath(checkedName)} contains an inactive snapshot for a different board; preserve or move that file first`);
+  }
   opts ||= {};
-  const exists = boardExists(name);
+  const exists = boardExists(checkedName);
   const resumeGithubBootstrap = exists && !fs.existsSync(boardPath(name)) &&
     backendConfig(name, binding ? { binding } : {}).backend === "github" && !!loadLocal(name).githubProject?.boardId &&
     loadLocal(name).githubProject?.bootstrapComplete !== true;

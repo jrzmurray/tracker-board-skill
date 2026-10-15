@@ -4,7 +4,7 @@
 //   boards/<name>.json        board data (the source of truth)
 //   boards/<name>.local.json  machine-local state: bindings, artifact url, db version,
 //                             when the artifact was last checked
-//   boards/<name>.base.json   the published document as of that db version (merge base)
+//   bases/<name>.json         the published document as of that db version (merge base)
 //   remote/<name>/            where `refresh` asks ArtifactData to save the published document
 //   out/docs/<name>-<hash>.json  db document bodies, written by every write and `push`
 //   out/<name>.html           static render, written by `render`
@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { BoardError, newBoard, validate } from "./board.mjs";
 import { dataHome, resolveConfig } from "./config.mjs";
 import { initializeBackendFactories, openBackend } from "./backend.mjs";
@@ -52,10 +53,12 @@ export const tryWithBoardLock = (name, fn) => withLock.forBoard(name).try(fn);
 export const tryWithLock = withLock.try;
 
 const boardsDir = () => path.join(home(), "boards");
+const basesDir = () => path.join(home(), "bases");
 export const outDir = () => path.join(home(), "out");
 const boardPath = (name) => path.join(boardsDir(), `${name}.json`);
 const localPath = (name) => path.join(boardsDir(), `${name}.local.json`);
-const basePath = (name) => path.join(boardsDir(), `${name}.base.json`);
+const basePath = (name) => path.join(basesDir(), `${name}.json`);
+const legacyBasePath = (name) => path.join(boardsDir(), `${name}.base.json`);
 export const remoteDir = (name) => path.join(home(), "remote", name);
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
@@ -92,6 +95,29 @@ function hasActiveBoardJson(name) {
     // underlying data error instead of silently hiding a user's board.
     return true;
   }
+}
+
+function legacyBaseBoard(name) {
+  if (!fs.existsSync(legacyBasePath(name))) return null;
+  try {
+    const board = readJson(legacyBasePath(name), null);
+    return board?.name === name ? board : null;
+  } catch {
+    return null;
+  }
+}
+
+function moveLegacyBase(name) {
+  const board = legacyBaseBoard(name);
+  if (!board) return false;
+  const target = basePath(name);
+  if (fs.existsSync(target)) {
+    if (!isDeepStrictEqual(readJson(target, null), board)) return false;
+  } else {
+    writeJson(target, board);
+  }
+  fs.rmSync(legacyBasePath(name), { force: true });
+  return true;
 }
 
 export function listBoards() {
@@ -261,7 +287,10 @@ export function getOperation(name, id) {
 export function createBoard(name, opts, { binding = null } = {}) {
   const checkedName = checkName(name);
   if (fs.existsSync(boardPath(checkedName)) && !hasActiveBoardJson(checkedName)) {
-    throw new BoardError(`cannot create board "${checkedName}": ${boardPath(checkedName)} contains an inactive snapshot for a different board; preserve or move that file first`);
+    const legacyBaseOwner = checkedName.endsWith(".base") ? checkedName.slice(0, -5) : "";
+    if (!legacyBaseOwner || !moveLegacyBase(legacyBaseOwner)) {
+      throw new BoardError(`cannot create board "${checkedName}": ${boardPath(checkedName)} contains an inactive snapshot for a different board; preserve or move that file first`);
+    }
   }
   opts ||= {};
   const exists = boardExists(checkedName);
@@ -381,7 +410,9 @@ export const findBackendTargetCollisions = (names = listBoards()) => inspectBack
 
 export function removeBoard(name) {
   backendFor(name).remove();
-  for (const f of [boardPath(name), localPath(name), basePath(name)]) fs.rmSync(f, { force: true });
+  if (hasActiveBoardJson(name)) fs.rmSync(boardPath(name), { force: true });
+  fs.rmSync(localPath(name), { force: true });
+  dropBase(name);
   for (const key of backendInstances.keys()) if (key.startsWith(`${name}\0`)) backendInstances.delete(key);
   latestSnapshots.delete(name);
 }
@@ -406,15 +437,21 @@ export function saveLocal(name, local) {
 }
 
 export function loadBase(name) {
-  return readJson(basePath(checkName(name)), null);
+  const checked = checkName(name);
+  const current = readJson(basePath(checked), null);
+  return current ?? legacyBaseBoard(checked);
 }
 
 export function dropBase(name) {
-  fs.rmSync(basePath(checkName(name)), { force: true });
+  const checked = checkName(name);
+  fs.rmSync(basePath(checked), { force: true });
+  if (legacyBaseBoard(checked)) fs.rmSync(legacyBasePath(checked), { force: true });
 }
 
 export function saveBase(name, board) {
-  writeJson(basePath(checkName(name)), board);
+  const checked = checkName(name);
+  writeJson(basePath(checked), board);
+  if (legacyBaseBoard(checked)) fs.rmSync(legacyBasePath(checked), { force: true });
 }
 
 // ---------- CWD context ----------

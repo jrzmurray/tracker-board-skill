@@ -76,8 +76,9 @@ Generated boards (the input format is board.schema.json)
 
 Backend and local editor
   backend [--json]                Show the resolved backend and configuration sources.
-  migrate --to json|sqlite|github [--dry-run]
-                                  Migrate and verify before switching this board's backend.
+  backend --set-binding KEY       Select and validate an existing saved backend target.
+  migrate --to json|sqlite|github [--binding KEY] [--dry-run]
+                                  Migrate and verify before switching this board's backend; KEY selects the destination.
   serve [--port N]                Open a local, editable board at a loopback-only URL.
 `;
 
@@ -153,7 +154,7 @@ function bindBoard(opts) {
 const artifact = createArtifactCommands({ boardName, out });
 const { commit, cachedPrStates } = artifact;
 const display = createDisplayHelpers({ out, staleNote: artifact.staleNote });
-const generatedCommands = createGeneratedCommands({ boardName, out, commit, bindBoard });
+const generatedCommands = createGeneratedCommands({ boardName, out, commit });
 
 const commands = {
   help() { out(USAGE); },
@@ -164,13 +165,11 @@ const commands = {
   create({ pos, opts }) {
     const name = S.checkName(pos[0] || opts.board);
     const meta = take(opts, ["title", "repoUrl"]);
-    const board = S.createBoard(name, meta);
+    const binding = opts["no-bind"] ? null : S.makeBinding(S.context(), { branch: !!opts.branch });
+    const board = S.createBoard(name, meta, { binding });
     let where = "unbound";
-    if (!opts["no-bind"]) {
-      const ctx = S.context();
-      const b = S.makeBinding(ctx, { branch: !!opts.branch });
-      S.saveLocal(name, { ...S.loadLocal(name), bindings: [b] });
-      where = `bound to ${b.root}${b.branch ? ` @ ${b.branch}` : ""} (key ${b.key})`;
+    if (binding) {
+      where = `bound to ${binding.root}${binding.branch ? ` @ ${binding.branch}` : ""} (key ${binding.key})`;
     }
     const backend = S.backendConfig(name).backend;
     out(`ok: created board ${name}, ${where}${backend === "github" ? " with a private GitHub Project" : ` using ${backend}`}`);

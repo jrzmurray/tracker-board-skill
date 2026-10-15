@@ -4,6 +4,7 @@ import { mergeBoards } from "../merge.mjs";
 import * as core from "./github-project-core.mjs";
 import { createGitHubProjectFieldManager } from "./github-project-fields.mjs";
 import { createGitHubProjectSynchronizer } from "./github-project-sync.mjs";
+import { sanitizeRepositoryUrl } from "../backend-target.mjs";
 
 const {
   AUTH_RECOVERY, GENERIC_PROJECT_TITLE, MIN_GH_VERSION, PROJECT_FIELDS,
@@ -20,6 +21,12 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
   const cfg = context?.config?.github || {};
   const sourceUrl = context?.repoUrl || context?.config?.repoUrl || "";
   const parsedRepo = parseGitHubRepo(sourceUrl);
+
+  function safeBoard(input) {
+    const board = normalizeBoard(input);
+    if (board.repoUrl) board.repoUrl = sanitizeRepositoryUrl(board.repoUrl);
+    return board;
+  }
 
   function ensureReady() {
     if (ready) return;
@@ -248,7 +255,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       ...(record()),
       owner,
       boardId,
-      repoUrl,
+      repoUrl: repoUrl ? sanitizeRepositoryUrl(repoUrl) : "",
       bootstrapStartedAt,
       ...(ref ? { projectNumber: ref.number, projectId: ref.id || undefined } : {}),
     });
@@ -384,10 +391,10 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
   });
   function create(boardInput) {
     ensureReady();
-    const board = normalizeBoard(boardInput);
+    const board = safeBoard(boardInput);
     const saved = record();
     if (saved.bootstrapComplete) throw new BoardError("GitHub Project already contains a completed Trackerboard board; use save instead of create.");
-    const boardId = saved.boardId || randomUUID();
+    const boardId = saved.boardId || context?.local?.boardId || randomUUID();
     // All size checks happen before project creation, field creation, or other
     // remote mutations. 128 bytes is a conservative bound for each opaque ID.
     const bodies = assertSizes(board, boardId, {});
@@ -419,13 +426,14 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const ref = refFor();
     if (!ref) return null;
     const snapshot = readRemote(ref, { allowMissing: true });
+    if (snapshot.ref.id) saveRecord({ ...record(), owner: snapshot.ref.owner, projectNumber: snapshot.ref.number, projectId: snapshot.ref.id });
     cachedRevision = revisionToken(snapshot.loaded?.board, snapshot.metadata);
     return snapshot.loaded?.board || null;
   }
 
   function save(boardInput, { previous: previousInput, expectedRevision } = {}) {
     ensureReady();
-    const desired = normalizeBoard(boardInput);
+    const desired = safeBoard(boardInput);
     const previous = previousInput ? normalizeBoard(previousInput) : null;
     const ref = refFor(desired);
     if (!ref) throw new BoardError("GitHub Project is not set up for this board; run create first.");

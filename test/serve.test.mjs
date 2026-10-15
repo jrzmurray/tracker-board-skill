@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { EditorRevisionConflict, startEditorServer } from "../skills/trackerboard/scripts/lib/serve.mjs";
+import { createEditorRouteHandler, EditorRevisionConflict, startEditorServer } from "../skills/trackerboard/scripts/lib/serve.mjs";
 
 function fixture() {
   return { board: { schema: 1, name: "demo", title: "Before", waves: [], log: [] }, revision: 1 };
@@ -35,6 +35,55 @@ async function start(t, overrides = {}) {
   };
 }
 
+async function startMounted(t) {
+  let current = fixture();
+  let loads = 0;
+  let calls = 0;
+  let origin;
+  const token = "mounted-board-capability";
+  const routePrefix = "/shared/boards/demo/editor";
+  const handler = createEditorRouteHandler({
+    boardName: "demo",
+    token,
+    routePrefix,
+    getOrigin: () => origin,
+    loadSnapshot: async () => {
+      loads++;
+      return structuredClone(current);
+    },
+    applyCommand: async (command, expectedRevision) => {
+      calls++;
+      if (!Object.is(expectedRevision, current.revision)) throw new EditorRevisionConflict();
+      if (command.type === "board.update") current.board.title = command.fields.title;
+      current.revision++;
+      return structuredClone(current);
+    },
+  });
+  const listener = http.createServer(async (request, response) => {
+    const handled = await handler(request, response);
+    if (!handled) {
+      response.writeHead(404, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      response.end(JSON.stringify({ error: "not found" }));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", () => {
+      listener.removeListener("error", reject);
+      resolve();
+    });
+  });
+  const address = listener.address();
+  origin = `http://127.0.0.1:${address.port}`;
+  t.after(() => new Promise((resolve, reject) => listener.close((error) => error ? reject(error) : resolve())));
+  return {
+    server: { token, bearerToken: `${routePrefix.slice(1)}/${token}`, origin, url: `${origin}${routePrefix}/${token}` },
+    routePrefix,
+    get loads() { return loads; },
+    get calls() { return calls; },
+  };
+}
+
 const json = (response) => response.json();
 
 async function post(server, body, headers = {}) {
@@ -42,7 +91,7 @@ async function post(server, body, headers = {}) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${server.token}`,
+      Authorization: `Bearer ${server.bearerToken ?? server.token}`,
       Origin: server.origin,
       ...headers,
     },
@@ -61,7 +110,7 @@ async function postWithHost(server, body, host) {
       headers: {
         Host: host,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${server.token}`,
+        Authorization: `Bearer ${server.bearerToken ?? server.token}`,
         Origin: server.origin,
       },
     }, (response) => {
@@ -99,6 +148,47 @@ test("writes require capability bearer, exact origin, and the bound Host", async
   const response = await post(server, body);
   assert.equal(response.status, 200);
   assert.equal((await json(response)).board.title, "After");
+  assert.equal(state.calls, 1);
+});
+
+test("mounted editor page and snapshot stay beneath the configured route prefix", async (t) => {
+  const state = await startMounted(t);
+  const { server, routePrefix } = state;
+  const page = await fetch(server.url);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Trackerboard · local editor/);
+  assert.equal(page.headers.get("cache-control"), "no-store");
+
+  const snapshot = await fetch(`${server.url}/api/snapshot`);
+  assert.equal(snapshot.status, 200);
+  assert.equal((await json(snapshot)).board.title, "Before");
+  const loadsBeforeMisses = state.loads;
+
+  const wrongCapability = await fetch(`${server.origin}${routePrefix}/not-the-capability/api/snapshot`);
+  const wrongCapabilityBody = await json(wrongCapability);
+  assert.equal(wrongCapability.status, 404);
+  assert.equal(wrongCapabilityBody.board, undefined);
+
+  const wrongPrefix = await fetch(`${server.origin}/outside${routePrefix}/${server.token}/api/snapshot`);
+  const wrongPrefixBody = await json(wrongPrefix);
+  assert.equal(wrongPrefix.status, 404);
+  assert.equal(wrongPrefixBody.board, undefined);
+  assert.equal(state.loads, loadsBeforeMisses);
+});
+
+test("mounted editor writes retain Host, exact Origin, and bearer checks", async (t) => {
+  const state = await startMounted(t);
+  const { server } = state;
+  const body = { expectedRevision: 1, command: { type: "board.update", fields: { title: "After mount" } } };
+
+  assert.equal((await post(server, body, { Authorization: "Bearer wrong" })).status, 401);
+  assert.equal((await post(server, body, { Origin: "http://localhost" })).status, 403);
+  assert.equal(await postWithHost(server, body, "example.com"), 421);
+  assert.equal(state.calls, 0);
+
+  const response = await post(server, body);
+  assert.equal(response.status, 200);
+  assert.equal((await json(response)).board.title, "After mount");
   assert.equal(state.calls, 1);
 });
 

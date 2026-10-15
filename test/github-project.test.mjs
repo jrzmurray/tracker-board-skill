@@ -91,6 +91,20 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-create"), true);
 });
 
+test("strips repository URL credentials and private URL components before local and Project persistence", () => {
+  const { backend, context, mock } = harness();
+  const board = makeBoard();
+  board.repoUrl = "https://agent:token-secret@github.com/acme/roadmap.git?access_token=query-secret#fragment-secret";
+  backend.create(board);
+
+  const project = [...mock.projects.values()][0];
+  const storedUrl = "https://github.com/acme/roadmap";
+  assert.equal(context.local.githubProject.repoUrl, storedUrl);
+  assert.equal(metadataOf(project).fields.repoUrl, storedUrl);
+  assert.doesNotMatch(project.readme, /token-secret|query-secret|fragment-secret/);
+  assert.doesNotMatch(JSON.stringify(context.local), /token-secret|query-secret|fragment-secret/);
+});
+
 test("retries an interrupted draft-item create by stable phase ID without duplicating the Project item", () => {
   const mock = new MockGitHub({ failAfterDraftCreate: true });
   const { backend, context } = harness(mock);
@@ -188,10 +202,13 @@ test("resolves a configured Project ID when no numeric Project number is provide
     ...context,
     config: { ...context.config, github: { projectId: project.id } },
     local: { bindings: [], artifactUrl: "" },
+    saveLocal(value) { this.local = structuredClone(value); },
   };
   const idOnlyBackend = createGitHubProjectBackend(idOnlyContext, mock);
 
   assert.deepEqual(idOnlyBackend.load(), board);
+  assert.equal(idOnlyContext.local.githubProject.projectId, project.id);
+  assert.equal(idOnlyContext.local.githubProject.projectNumber, project.number);
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "view" && args.includes("NaN")), false);
 });
 

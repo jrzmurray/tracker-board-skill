@@ -23,7 +23,7 @@ function refreshPrStates(board, repo, limit) {
   return G.derivePrStates(board, prs);
 }
 
-export function createGeneratedCommands({ boardName, out, commit, bindBoard }) {
+export function createGeneratedCommands({ boardName, out, commit }) {
   return {
     async import({ pos, opts }) {
       if (!opts.from) throw new B.BoardError("import needs --from <board json>");
@@ -43,10 +43,10 @@ export function createGeneratedCommands({ boardName, out, commit, bindBoard }) {
       if (!opts.replace) {
         if (opts.keep) throw new B.BoardError("--keep only applies with --replace");
         if (S.boardExists(name)) throw new B.BoardError(`board "${name}" already exists; pass --replace to update it from this file`);
-        S.createBoard(name, { title: incoming.title, repoUrl: incoming.repoUrl });
+        const binding = opts["no-bind"] ? null : S.makeBinding(S.context(), { branch: !!opts.branch });
+        S.createBoard(name, { title: incoming.title, repoUrl: incoming.repoUrl }, { binding });
         S.saveBoard(incoming);
         out(`ok: imported ${name} (${B.allPhases(incoming).length} phases)`);
-        if (!opts["no-bind"]) bindBoard({ board: name, branch: opts.branch });
         return;
       }
       if (opts["no-bind"] || opts.branch) throw new B.BoardError("--replace keeps the board's bindings; drop --no-bind / --branch");

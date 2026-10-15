@@ -52,10 +52,6 @@ test("discovery stays responsive and preserves the route during a slow GitHub mu
       if (candidate === name) return { backend: "github", identity: target, unresolved: null };
       return S.backendTargetInfo(candidate);
     },
-    async tryWithBoardLock(candidate, callback) {
-      if (candidate === name && mutationActive) return { acquired: false };
-      return S.tryWithBoardLock(candidate, callback);
-    },
   };
 
   const server = await startSharedBoardServer({
@@ -65,16 +61,20 @@ test("discovery stays responsive and preserves the route during a slow GitHub mu
         async snapshot() { return { board, revision }; },
         async applyCommand(command, expectedRevision) {
           assert.equal(expectedRevision, revision);
-          mutationActive = true;
-          signalMutationStarted();
-          try {
-            await mutationGate;
-            board = { ...board, title: command.fields.title };
-            revision++;
-            return { board, revision };
-          } finally {
-            mutationActive = false;
-          }
+          // The remote call is represented by the gate; hold the real shared
+          // board lock while it is pending, as the GitHub backend does.
+          return S.withBoardLock(name, async () => {
+            mutationActive = true;
+            signalMutationStarted();
+            try {
+              await mutationGate;
+              board = { ...board, title: command.fields.title };
+              revision++;
+              return { board, revision };
+            } finally {
+              mutationActive = false;
+            }
+          });
         },
         async close() {},
       };

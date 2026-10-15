@@ -59,6 +59,7 @@ const basePath = (name) => path.join(boardsDir(), `${name}.base.json`);
 export const remoteDir = (name) => path.join(home(), "remote", name);
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
+const RECOVERY_SNAPSHOT_NAME_RE = /\.recovery-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 
 export function checkName(name) {
   if (!name || !NAME_RE.test(name)) throw new BoardError(`invalid board name "${name}" (letters, digits, . _ -)`);
@@ -88,13 +89,22 @@ export function listBoards() {
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  const names = new Set(files.filter((f) => f.endsWith(".json") && !f.endsWith(".local.json")).map((f) => f.slice(0, -5)));
-  for (const f of files.filter((f) => f.endsWith(".local.json"))) names.add(f.slice(0, -11));
+  const names = new Set(files
+    .filter((file) => file.endsWith(".json")
+      && !file.endsWith(".local.json")
+      && !file.endsWith(".base.json")
+      && !RECOVERY_SNAPSHOT_NAME_RE.test(file.slice(0, -5)))
+    .map((file) => file.slice(0, -5)));
+  for (const file of files.filter((entry) => entry.endsWith(".local.json"))) {
+    const name = file.slice(0, -11);
+    if (!RECOVERY_SNAPSHOT_NAME_RE.test(name)) names.add(name);
+  }
   return [...names].sort();
 }
 
 export function boardExists(name) {
   const checked = checkName(name);
+  if (RECOVERY_SNAPSHOT_NAME_RE.test(checked)) return false;
   return fs.existsSync(boardPath(checked)) || fs.existsSync(localPath(checked));
 }
 

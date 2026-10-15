@@ -30,6 +30,33 @@ test("shared store lock recovers immediately when its owner process exited", asy
   assert.equal(fs.existsSync(path.join(home, ".lock")), false);
 });
 
+test("board discovery excludes inactive base and migration recovery snapshots", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-board-discovery-"));
+  const previousHome = process.env.TRACKERBOARD_HOME;
+  process.env.TRACKERBOARD_HOME = home;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.TRACKERBOARD_HOME;
+    else process.env.TRACKERBOARD_HOME = previousHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const boards = path.join(home, "boards");
+  fs.mkdirSync(boards, { recursive: true });
+  for (const name of [
+    "active.json",
+    "legacy-unbound.json",
+    "active.local.json",
+    "active.base.json",
+    "active.recovery-2026-10-15T15-33-19-434Z.json",
+    "active.recovery-2026-10-15T15-33-19-434Z.local.json",
+  ]) fs.writeFileSync(path.join(boards, name), "{}");
+
+  const storeUrl = pathToFileURL(path.resolve("skills/trackerboard/scripts/lib/store.mjs")).href;
+  const { boardExists, listBoards } = await import(storeUrl);
+  assert.deepEqual(listBoards(), ["active", "legacy-unbound"]);
+  assert.equal(boardExists("active.recovery-2026-10-15T15-33-19-434Z"), false);
+});
+
 test("board locks serialize one board while allowing independent boards to proceed", async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-board-lock-"));
   const previousHome = process.env.TRACKERBOARD_HOME;

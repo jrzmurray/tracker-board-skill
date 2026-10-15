@@ -47,6 +47,7 @@ export function home() {
 }
 
 export const withLock = createStoreLock(home);
+export const tryWithLock = withLock.try;
 
 const boardsDir = () => path.join(home(), "boards");
 export const outDir = () => path.join(home(), "out");

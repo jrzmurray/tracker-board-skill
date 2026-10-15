@@ -86,7 +86,14 @@ function rebaseCommand(command, base, current, conflict) {
   }
 }
 
-export function createEditorCallbacks({ boardName, revisionConflict }) {
+export function createEditorCallbacks({
+  boardName,
+  revisionConflict,
+  expectedTargetIdentity = null,
+  store = S,
+  remoteCacheMs = 60_000,
+  now = Date.now,
+}) {
   let remoteSnapshot = null;
   let remoteSnapshotAt = 0;
   let remoteRead = null;
@@ -100,31 +107,51 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
   }
 
   function remote() {
-    return S.backendConfig(boardName).backend === "github";
+    return store.backendConfig(boardName).backend === "github";
   }
 
-  function loadSnapshot() {
-    if (remote()) {
-      if (remoteSnapshot && Date.now() - remoteSnapshotAt < 60000) return structuredClone(remoteSnapshot);
-      if (remoteRead) return structuredClone(remoteRead);
+  function assertTargetCurrent() {
+    if (!store.boardExists(boardName)) throw revisionConflict("board was removed; reload the Trackerboard index");
+    if (!expectedTargetIdentity) return;
+    const current = store.backendTargetInfo(boardName).identity;
+    if (JSON.stringify(current) !== JSON.stringify(expectedTargetIdentity)) {
+      throw revisionConflict("board backend changed; reload the Trackerboard index");
     }
-    const board = S.loadBoard(boardName);
-    const snapshot = { board, revision: S.getRevision(boardName) };
+  }
+
+  async function loadSnapshot() {
+    assertTargetCurrent();
     if (remote()) {
-      remoteRead = snapshot;
-      remoteSnapshot = snapshot;
-      remoteSnapshotAt = Date.now();
-      rememberRemote(snapshot);
-      queueMicrotask(() => { remoteRead = null; });
+      if (remoteSnapshot && now() - remoteSnapshotAt < remoteCacheMs) return structuredClone(remoteSnapshot);
+      if (!remoteRead) {
+        remoteRead = Promise.resolve().then(() => {
+          assertTargetCurrent();
+          return Promise.resolve(store.loadBoard(boardName)).then((board) => ({ board, revision: store.getRevision(boardName) }));
+        });
+      }
+      try {
+        const snapshot = await remoteRead;
+        remoteSnapshot = snapshot;
+        remoteSnapshotAt = now();
+        rememberRemote(snapshot);
+        return structuredClone(snapshot);
+      } finally {
+        remoteRead = null;
+      }
     }
-    return structuredClone(snapshot);
+    const board = await store.loadBoard(boardName);
+    return { board, revision: store.getRevision(boardName) };
   }
 
   async function applyCommand(command, expectedRevision) {
-    return S.withLock(() => {
+    return store.withLock(() => {
+      // A route can outlive a migration until the next discovery scan. Recheck
+      // the pinned backend under the same lock as the read-modify-write so an
+      // old capability cannot write into the new target (or recreate removal).
+      assertTargetCurrent();
       const isRemote = remote();
-      const before = S.loadBoard(boardName);
-      const revision = S.getRevision(boardName);
+      const before = store.loadBoard(boardName);
+      const revision = store.getRevision(boardName);
       if (!isRemote && expectedRevision != null && revision != null && expectedRevision !== revision) {
         throw revisionConflict();
       }
@@ -195,7 +222,7 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
       }
       let nextRevision;
       try {
-        nextRevision = S.saveBoard(board, { previous: baseline || before, expectedRevision });
+        nextRevision = store.saveBoard(board, { previous: baseline || before, expectedRevision });
       } catch (error) {
         if (error?.code === "TRACKERBOARD_REVISION_CONFLICT") throw revisionConflict();
         throw error;
@@ -205,7 +232,7 @@ export function createEditorCallbacks({ boardName, revisionConflict }) {
       const result = { board, revision: nextRevision };
       if (remote()) {
         remoteSnapshot = result;
-        remoteSnapshotAt = Date.now();
+        remoteSnapshotAt = now();
         rememberRemote(result);
       }
       return structuredClone(result);

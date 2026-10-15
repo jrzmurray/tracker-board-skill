@@ -35,7 +35,26 @@ export function createStoreLock(home) {
     }
   }
 
-  return async function withLock(fn) {
+  function tryAcquire() {
+    const dir = path.join(home(), ".lock");
+    fs.mkdirSync(home(), { recursive: true });
+    try {
+      fs.mkdirSync(dir);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      if (removeStaleLock(dir)) return tryAcquire();
+      return null;
+    }
+    try {
+      fs.writeFileSync(path.join(dir, "owner"), String(process.pid) + "\n", { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw error;
+    }
+    return () => fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  async function withLock(fn) {
     const dir = path.join(home(), ".lock");
     fs.mkdirSync(home(), { recursive: true });
     const deadline = Date.now() + 15000;
@@ -57,5 +76,17 @@ export function createStoreLock(home) {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+
+  // Discovery only needs a consistent view of local bindings and board
+  // identities. It must not wait behind a GitHub write that holds the global
+  // store lock while synchronous gh CLI calls run in that board's worker.
+  withLock.try = async (fn) => {
+    const release = tryAcquire();
+    if (!release) return { acquired: false };
+    try { return { acquired: true, value: await fn() }; }
+    finally { release(); }
   };
+
+  return withLock;
 }

@@ -15,9 +15,10 @@ const previousDataHome = process.env.TRACKERBOARD_DATA_HOME;
 process.env.TRACKERBOARD_HOME = path.join(root, "home");
 process.env.TRACKERBOARD_DATA_HOME = path.join(root, "data");
 
-const [{ startSharedBoardServer }, S, serviceRuntime] = await Promise.all([
+const [{ startSharedBoardServer }, S, C, serviceRuntime] = await Promise.all([
   import("../skills/trackerboard/scripts/lib/shared-server.mjs"),
   import("../skills/trackerboard/scripts/lib/store.mjs"),
+  import("../skills/trackerboard/scripts/lib/config.mjs"),
   import("../skills/trackerboard/scripts/lib/service-runtime.mjs"),
 ]);
 
@@ -36,7 +37,21 @@ test.after(async () => {
 async function makeBoard(name = "demo") {
   await S.initializeBackends();
   if (S.boardExists(name)) S.removeBoard(name);
+  fs.mkdirSync(path.dirname(C.globalConfigPath()), { recursive: true });
+  fs.writeFileSync(C.globalConfigPath(), JSON.stringify({ backend: "json" }));
   S.createBoard(name, { title: `${name} board` });
+}
+
+async function makeSqliteBoard(name) {
+  await S.initializeBackends();
+  if (S.boardExists(name)) S.removeBoard(name);
+  fs.mkdirSync(path.dirname(C.globalConfigPath()), { recursive: true });
+  fs.writeFileSync(C.globalConfigPath(), JSON.stringify({
+    backend: "sqlite",
+    sqlite: { path: path.join(root, "shared.sqlite") },
+  }));
+  S.createBoard(name, { title: `${name} board` });
+  fs.writeFileSync(C.globalConfigPath(), JSON.stringify({ backend: "json" }));
 }
 
 async function startServer(t) {
@@ -157,10 +172,10 @@ test("discovery coalesces concurrent scans and respects its two-second bound", a
   let lockCalls = 0;
   const store = {
     ...S,
-    async withLock(callback) {
+    async tryWithLock(callback) {
       lockCalls++;
       await new Promise((resolve) => setTimeout(resolve, 50));
-      return S.withLock(callback);
+      return S.tryWithLock(callback);
     },
   };
   const server = await startSharedBoardServer({ store });
@@ -172,6 +187,31 @@ test("discovery coalesces concurrent scans and respects its two-second bound", a
   await waitForDiscoveryWindow();
   await Promise.all([server.rescan(), server.rescan(), server.rescan()]);
   assert.equal(lockCalls, 2, "concurrent refresh requests share one full scan");
+});
+
+test("discovery skips the global lock while a slow backend write holds it", async (t) => {
+  await makeBoard("lock-busy");
+  const server = await startServer(t);
+  const originalUrl = server.boardUrl("lock-busy");
+  let signalAcquired;
+  const acquired = new Promise((resolve) => { signalAcquired = resolve; });
+  const slowWrite = S.withLock(async () => {
+    signalAcquired();
+    // Backend mutations use this same lock across their read/modify/write;
+    // GitHub CLI calls can keep it held while the isolated worker is blocked.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+  });
+  await acquired;
+  await waitForDiscoveryWindow();
+
+  const startedAt = Date.now();
+  await server.rescan();
+  assert.ok(Date.now() - startedAt < 250, "discovery does not wait for the remote write's global lock");
+  assert.equal(server.boardUrl("lock-busy"), originalUrl, "a skipped scan preserves the active route");
+
+  await slowWrite;
+  await server.rescan();
+  assert.equal(server.boardUrl("lock-busy"), originalUrl, "the next discovery refreshes after the lock is released");
 });
 
 test("a newly detected duplicate backend target revokes the existing edit route", async (t) => {
@@ -193,6 +233,181 @@ test("a newly detected duplicate backend target revokes the existing edit route"
   await server.rescan();
   assert.equal(server.boardUrl("demo"), null);
   assert.equal((await fetch(originalUrl)).status, 410);
+});
+
+test("shared service registers JSON, SQLite, and GitHub independently and isolates a delayed Project", async (t) => {
+  await makeBoard("json-board");
+  await makeSqliteBoard("sqlite-board");
+  await makeBoard("github-board");
+
+  const callsFile = path.join(root, "fake-gh-calls.log");
+  const fakeGh = path.join(root, "slow-gh.sh");
+  fs.writeFileSync(fakeGh, `#!/bin/sh\nprintf 'call\\n' >> ${JSON.stringify(callsFile)}\nsleep 2\nexit 1\n`);
+  fs.chmodSync(fakeGh, 0o700);
+  const local = S.loadLocal("github-board");
+  local.backendOverride = {
+    backend: "github",
+    github: { owner: "acme", projectId: "PVT_slow", executable: fakeGh },
+  };
+  local.githubProject = {
+    owner: "acme",
+    projectId: "PVT_slow",
+    projectNumber: 12,
+    repoUrl: "https://github.com/acme/roadmap",
+    boardId: local.boardId,
+    bootstrapComplete: true,
+  };
+  S.saveLocal("github-board", local);
+
+  const server = await startServer(t);
+  const initialIndex = await (await fetch(server.indexUrl)).text();
+  assert.match(initialIndex, /json-board/);
+  assert.match(initialIndex, /sqlite/);
+  assert.match(initialIndex, /github/);
+  assert.ok(server.boardUrl("json-board"));
+  assert.ok(server.boardUrl("sqlite-board"));
+  assert.ok(server.boardUrl("github-board"));
+  assert.equal(fs.existsSync(callsFile), false, "GitHub discovery does not read the remote Project");
+
+  const jsonSnapshot = await getSnapshot(server.boardUrl("json-board"));
+  const sqliteSnapshot = await getSnapshot(server.boardUrl("sqlite-board"));
+  assert.equal(jsonSnapshot.response.status, 200);
+  assert.equal(sqliteSnapshot.response.status, 200);
+  assert.equal(sqliteSnapshot.body.board.title, "sqlite-board board");
+
+  const githubRequest = getSnapshot(server.boardUrl("github-board"));
+  const waitUntilGhStarted = async () => {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && !fs.existsSync(callsFile)) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(fs.existsSync(callsFile), "the isolated GitHub worker started its fake gh call");
+  };
+  await waitUntilGhStarted();
+  const start = Date.now();
+  const stillResponsive = await Promise.all([
+    getSnapshot(server.boardUrl("json-board")),
+    getSnapshot(server.boardUrl("sqlite-board")),
+  ]);
+  assert.ok(Date.now() - start < 1_000, "a delayed GitHub CLI call does not block local board routes");
+  assert.deepEqual(stillResponsive.map(({ response }) => response.status), [200, 200]);
+
+  const remoteFailure = await githubRequest;
+  assert.equal(remoteFailure.response.status, 500);
+  assert.equal(fs.readFileSync(callsFile, "utf8").trim().split("\n").length, 1);
+  assert.equal((await getSnapshot(server.boardUrl("github-board"))).response.status, 500);
+  assert.equal(fs.readFileSync(callsFile, "utf8").trim().split("\n").length, 1, "a failed remote board backs off independently");
+
+  const before = await getSnapshot(server.boardUrl("sqlite-board"));
+  const stale = await fetch(`${server.boardUrl("sqlite-board")}/api/command`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${editorBearer(server.boardUrl("sqlite-board"))}`,
+      Origin: server.origin,
+    },
+    body: JSON.stringify({
+      expectedRevision: before.body.revision - 1,
+      command: { type: "board.update", fields: { title: "stale" } },
+    }),
+  });
+  assert.equal(stale.status, 409, "SQLite retains expected-revision conflict behavior through the worker");
+  const saved = await fetch(`${server.boardUrl("sqlite-board")}/api/command`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${editorBearer(server.boardUrl("sqlite-board"))}`,
+      Origin: server.origin,
+    },
+    body: JSON.stringify({
+      expectedRevision: before.body.revision,
+      command: { type: "board.update", fields: { title: "SQLite edited" } },
+    }),
+  });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).revision, before.body.revision + 1);
+});
+
+test("a command queued before board removal cannot recreate the removed board", async (t) => {
+  await makeBoard("remove-race");
+  const server = await startServer(t);
+  const url = server.boardUrl("remove-race");
+  const snapshot = await getSnapshot(url);
+
+  let pendingWrite;
+  await S.withLock(async () => {
+    pendingWrite = fetch(`${url}/api/command`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${editorBearer(url)}`,
+        Origin: server.origin,
+      },
+      body: JSON.stringify({
+        expectedRevision: snapshot.body.revision,
+        command: { type: "board.update", fields: { title: "must not return" } },
+      }),
+    });
+    // Give the isolated worker time to receive the operation and wait on this
+    // lock before removal wins the serialized read-modify-write race.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    S.removeBoard("remove-race");
+  });
+
+  const response = await pendingWrite;
+  assert.equal(response.status, 409);
+  assert.equal(S.boardExists("remove-race"), false);
+  await waitForDiscoveryWindow();
+  await server.rescan();
+  assert.equal(server.boardUrl("remove-race"), null);
+  assert.equal((await fetch(url)).status, 410);
+});
+
+test("target rebinding and removal retire the old route and close that board worker", async (t) => {
+  const board = { name: "mutable", title: "Mutable", waves: [], log: [] };
+  let target = { backend: "json", file: "/tmp/mutable.json" };
+  let present = true;
+  const workers = [];
+  const store = {
+    async withLock(callback) { return callback(); },
+    listBoards() { return present ? ["mutable"] : []; },
+    ensureBoardIdentity() { return { boardId: "board-id" }; },
+    backendTargetInfo() { return { backend: target.backend, identity: target, unresolved: null }; },
+    inspectBackendTargets() { return { collisions: [] }; },
+    loadBoard() { return board; },
+  };
+  const server = await startSharedBoardServer({
+    store,
+    workerFactory({ targetIdentity }) {
+      const worker = {
+        closed: false,
+        async snapshot() { return { board: { ...board }, revision: 1 }; },
+        async applyCommand() { return { board: { ...board }, revision: 2 }; },
+        async close() { this.closed = true; },
+      };
+      workers.push({ targetIdentity, worker });
+      return worker;
+    },
+  });
+  t.after(() => server.close());
+  const oldUrl = server.boardUrl("mutable");
+  assert.equal((await getSnapshot(oldUrl)).response.status, 200);
+  assert.equal(workers.length, 1);
+
+  target = { backend: "sqlite", file: "/tmp/mutable.sqlite", rowKey: "mutable" };
+  await waitForDiscoveryWindow();
+  await server.rescan();
+  const newUrl = server.boardUrl("mutable");
+  assert.ok(newUrl);
+  assert.notEqual(newUrl, oldUrl);
+  assert.equal(workers[0].worker.closed, true);
+  assert.equal((await fetch(oldUrl)).status, 410);
+  assert.equal((await getSnapshot(newUrl)).response.status, 200);
+
+  present = false;
+  await waitForDiscoveryWindow();
+  await server.rescan();
+  assert.equal(server.boardUrl("mutable"), null);
+  assert.equal(workers[1].worker.closed, true);
+  assert.equal((await fetch(newUrl)).status, 410);
 });
 
 test("CLI serve reuses one private runtime, reports status, and stops it", async () => {

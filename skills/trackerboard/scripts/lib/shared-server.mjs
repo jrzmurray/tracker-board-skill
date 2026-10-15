@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
-import { createEditorCallbacks } from "./editor-operations.mjs";
+import { createSharedBoardClient } from "./shared-board-client.mjs";
 import { EditorRevisionConflict, createEditorRouteHandler } from "./serve.mjs";
 
 const capability = () => randomBytes(32).toString("base64url");
@@ -76,7 +76,13 @@ function routePrefix(boardId) {
  * Start one shared loopback listener. The caller owns process singleton
  * management and supplies a private control capability for CLI-only actions.
  */
-export async function startSharedBoardServer({ store, port = 0, controlToken = capability(), onStop = () => {} } = {}) {
+export async function startSharedBoardServer({
+  store,
+  port = 0,
+  controlToken = capability(),
+  onStop = () => {},
+  workerFactory = createSharedBoardClient,
+} = {}) {
   if (!store) throw new TypeError("store is required");
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new TypeError("port must be an integer from 0 through 65535");
 
@@ -94,11 +100,62 @@ export async function startSharedBoardServer({ store, port = 0, controlToken = c
   const indexUrl = () => `${origin}/i/${indexToken}`;
   const boardUrl = (entry) => entry?.route ? `${origin}${entry.route}` : null;
 
+  function markFailure(entry, error, details = {}) {
+    if (error?.code === "TRACKERBOARD_REVISION_CONFLICT" ||
+        (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500)) return;
+    entry.status = availability(error);
+    if (details.retryAt) entry.retryAt = details.retryAt;
+  }
+
+  function workerFor(entry) {
+    if (entry.draining) throw new EditorRevisionConflict("board route is no longer active");
+    if (!entry.worker) {
+      entry.worker = workerFactory({
+        boardName: entry.name,
+        targetIdentity: entry.targetIdentity,
+        onSuccess: (snapshot) => {
+          if (snapshot?.board?.title) entry.title = snapshot.board.title;
+          entry.status = "available";
+        },
+        onFailure: (error, details) => markFailure(entry, error, details),
+      });
+    }
+    return entry.worker;
+  }
+
+  async function loadSnapshot(entry) {
+    if (entry.draining) throw new EditorRevisionConflict("board route is no longer active");
+    try {
+      const snapshot = await workerFor(entry).snapshot();
+      entry.title = snapshot.board.title || entry.name;
+      entry.status = "available";
+      entry.retryAt = 0;
+      return snapshot;
+    } catch (error) {
+      markFailure(entry, error);
+      throw error;
+    }
+  }
+
+  async function applyCommand(entry, command, expectedRevision) {
+    if (entry.draining) throw new EditorRevisionConflict("board route is no longer active");
+    try {
+      const snapshot = await workerFor(entry).applyCommand(command, expectedRevision);
+      entry.title = snapshot.board.title || entry.name;
+      entry.status = "available";
+      entry.retryAt = 0;
+      return snapshot;
+    } catch (error) {
+      markFailure(entry, error);
+      throw error;
+    }
+  }
+
   async function scan() {
     if (scanPromise) return scanPromise;
     if (Date.now() - lastScanAt < 2_000) return entries;
     scanPromise = (async () => {
-      const result = await store.withLock(() => {
+      const discover = () => {
         const names = store.listBoards();
         const records = [];
         for (const name of names) {
@@ -112,7 +169,12 @@ export async function startSharedBoardServer({ store, port = 0, controlToken = c
         }
         const inspection = store.inspectBackendTargets(names);
         return { records, collisions: inspection.collisions };
-      });
+      };
+      const attempt = typeof store.tryWithLock === "function"
+        ? await store.tryWithLock(discover)
+        : { acquired: true, value: await store.withLock(discover) };
+      if (!attempt.acquired) return entries;
+      const result = attempt.value;
       const collisionNames = new Set(result.collisions.flatMap((collision) => collision.boards));
       const nextEntries = [];
       const seen = new Set();
@@ -121,67 +183,83 @@ export async function startSharedBoardServer({ store, port = 0, controlToken = c
         const backend = item.info?.backend || "unknown";
         const identityKey = item.info?.identity ? JSON.stringify(item.info.identity) : "";
         if (collisionNames.has(item.name)) status = "duplicate storage target";
-        else if (!identityKey) status = "needs binding";
-        else if (backend !== "json") status = "backend not enabled by this service";
+        else if (!identityKey || item.info?.unresolved) status = "needs binding";
+
+        let discoveredTitle = null;
+        if (status === "available" && identityKey && backend !== "github") {
+          try { discoveredTitle = store.loadBoard(item.name)?.title || item.name; }
+          catch { status = "unavailable"; }
+        }
 
         const old = item.boardId ? active.get(item.boardId) : null;
+        const oldRoute = old?.route || null;
+        const oldWorker = old?.worker || null;
         const sameTarget = old && old.name === item.name && old.identityKey === identityKey;
-        const entry = {
+        const entry = sameTarget ? old : {
           name: item.name,
-          title: old?.title || item.name,
+          title: item.name,
           boardId: item.boardId || "",
           backend,
           status,
           identityKey,
+          targetIdentity: item.info?.identity || null,
           route: null,
           handle: null,
+          worker: null,
+          draining: false,
         };
-        if (status === "available" && backend === "json") {
-          try {
-            // Phase 2 registers JSON boards only. Loading here catches corrupt
-            // boards independently without preventing other entries from serving.
-            const board = item.info && store.loadBoard(item.name);
-            entry.title = board?.title || item.name;
-            const baseRoute = routePrefix(entry.boardId);
-            entry.route = sameTarget ? old.route : `${baseRoute}/${capability()}`;
-            entry.handle = sameTarget ? old.handle : null;
-            if (!entry.handle) {
-              const callbacks = createEditorCallbacks({
-                boardName: entry.name,
-                revisionConflict: () => new EditorRevisionConflict(),
-              });
-              entry.handle = createEditorRouteHandler({
-                boardName: entry.name,
-                token: entry.route.split("/").at(-1),
-                routePrefix: baseRoute,
-                getOrigin: () => origin,
-                ...callbacks,
-                isRevisionCurrent: (expected, current) => Object.is(expected, current),
-              });
-            }
-            entry.status = "available";
-          } catch {
-            entry.status = "unavailable";
-            if (sameTarget) {
-              entry.route = old.route;
-              entry.handle = old.handle;
-            }
+        entry.name = item.name;
+        entry.boardId = item.boardId || "";
+        entry.backend = backend;
+        entry.identityKey = identityKey;
+        entry.targetIdentity = item.info?.identity || null;
+        if (discoveredTitle) entry.title = discoveredTitle;
+        if (sameTarget && old.status === "unavailable" && backend === "github") {
+          entry.status = "unavailable";
+          entry.retryAt = old.retryAt;
+        } else {
+          entry.status = status;
+          if (status === "available") entry.retryAt = 0;
+        }
+
+        const mountable = identityKey && !["duplicate storage target", "needs binding"].includes(status);
+        if (mountable) {
+          const baseRoute = routePrefix(entry.boardId);
+          entry.route = sameTarget ? old.route : `${baseRoute}/${capability()}`;
+          entry.worker = sameTarget ? old.worker : null;
+          if (!entry.handle) {
+            entry.handle = createEditorRouteHandler({
+              boardName: entry.name,
+              token: entry.route.split("/").at(-1),
+              routePrefix: baseRoute,
+              getOrigin: () => origin,
+              loadSnapshot: () => loadSnapshot(entry),
+              applyCommand: (command, expectedRevision) => applyCommand(entry, command, expectedRevision),
+              isRevisionCurrent: (expected, current) => Object.is(expected, current),
+            });
           }
-        } else if (sameTarget && status === "unavailable") {
-          // Outages do not revoke a capability. The handler will recover when
-          // the underlying target becomes readable again.
-          entry.route = old.route;
-          entry.handle = old.handle;
+          entry.draining = false;
+        } else {
+          entry.route = null;
+          entry.handle = null;
+          entry.worker = sameTarget ? old.worker : null;
         }
 
         if (item.boardId) seen.add(item.boardId);
-        if (old && old.route && (!sameTarget || (!entry.route && status !== "unavailable"))) retired.add(old.route);
+        if (oldRoute && (!sameTarget || (!entry.route && status !== "unavailable"))) retired.add(oldRoute);
+        if (oldWorker && (!sameTarget || !entry.route)) {
+          old.draining = true;
+          await oldWorker.close().catch(() => {});
+          entry.worker = null;
+        }
         if (entry.boardId) active.set(entry.boardId, entry);
         nextEntries.push(entry);
       }
       for (const [boardId, previous] of active) {
         if (!seen.has(boardId)) {
           if (previous.route) retired.add(previous.route);
+          previous.draining = true;
+          await previous.worker?.close().catch(() => {});
           active.delete(boardId);
         }
       }
@@ -323,9 +401,11 @@ export async function startSharedBoardServer({ store, port = 0, controlToken = c
     indexUrl: indexUrl(),
     boardUrl(name) { return boardUrl(entries.find((entry) => entry.name === name)); },
     async rescan() { return scan(); },
-    close() {
+    async close() {
       clearInterval(timer);
-      return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      for (const entry of active.values()) entry.draining = true;
+      await Promise.all([...active.values()].map((entry) => entry.worker?.close().catch(() => {})));
+      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     },
   };
 }

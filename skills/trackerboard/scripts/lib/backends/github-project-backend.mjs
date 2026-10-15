@@ -3,6 +3,7 @@ import { BoardError, SCHEMA, normalizeBoard } from "../board.mjs";
 import { mergeBoards } from "../merge.mjs";
 import * as core from "./github-project-core.mjs";
 import { createGitHubProjectFieldManager } from "./github-project-fields.mjs";
+import { projectItemsByIds } from "./github-project-items.mjs";
 import { createGitHubProjectSynchronizer } from "./github-project-sync.mjs";
 import { sanitizeRepositoryUrl } from "../backend-target.mjs";
 import { appendOperation, assertOperationMatch, findOperation } from "../operation-receipts.mjs";
@@ -106,6 +107,18 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const itemsParsed = parseJson(run(client, itemArgs), "project items");
     const items = listFromJson(itemsParsed, ["items", "projectItems"]);
     const metadata = readMetadata(readmeOf(details));
+    const visibleIds = new Set(items.map(itemId).filter(Boolean).map(String));
+    const mappedIds = Object.values(metadata?.phaseItems || {})
+      .map(String)
+      .filter((id) => id && !visibleIds.has(id));
+    for (const item of projectItemsByIds(client, mappedIds)) {
+      if (String(item.project?.id || "") !== String(details.id || "")) continue;
+      if (!isDraftItem(item)) throw new BoardError("Trackerboard metadata maps a phase to a non-draft GitHub Project item; refusing to treat a repository Issue or PR as a phase.");
+      if (!visibleIds.has(String(itemId(item)))) {
+        items.push(item);
+        visibleIds.add(String(itemId(item)));
+      }
+    }
     return { ref: { ...ref, id: projectId(details) || ref.id, number: projectNumber(details) || ref.number }, project: details, fields, items, metadata };
   }
 

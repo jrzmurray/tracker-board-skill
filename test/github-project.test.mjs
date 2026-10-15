@@ -131,6 +131,20 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-create"), true);
 });
 
+test("recovers a draft item by its returned ID when the Project item index is delayed", () => {
+  const mock = new MockGitHub({ hideProjectItems: true });
+  const { backend } = harness(mock);
+  const board = makeBoard();
+
+  backend.create(board);
+
+  assert.deepEqual(backend.load(), board);
+  assert.equal([...mock.projects.values()][0].items.length, 1);
+  assert.equal(mock.calls.filter(({ args }) => args[0] === "project" && args[1] === "item-create").length, 1);
+  assert.equal(mock.calls.some(({ args, input }) => args[0] === "api" && JSON.parse(input).query.includes("nodes(ids: $ids)")), true);
+  assert.equal(hasIssueWrite(mock), false);
+});
+
 test("log append retries are idempotent when GitHub saved the README manifest before losing its response", () => {
   const mock = new MockGitHub();
   const { backend } = harness(mock);

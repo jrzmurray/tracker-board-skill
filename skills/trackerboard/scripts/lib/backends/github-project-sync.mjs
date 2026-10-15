@@ -2,7 +2,7 @@ import { BoardError } from "../board.mjs";
 import {
   MAX_NODE_ID_BYTES, MAX_OPERATION_RECEIPTS, MIN_GH_VERSION, PROJECT_FIELDS, assertSizes, draftItemId, fieldByName,
   isDraftItem, itemBody, itemId, itemTitle, makeMetadata, readmeOf,
-  revisionToken, run, statusValue, valueOf, withMetadata,
+  parseJson, revisionToken, run, statusValue, valueOf, withMetadata,
 } from "./github-project-core.mjs";
 
 const PHASE_FIELDS = ["Trackerboard ID", "Status", "Wave", "Lane", "Owner", "Order"];
@@ -166,10 +166,17 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
       const body = phaseBody(boardId, phaseItems, pendingDelete, desired, phaseId);
       const title = position.phase.title || phaseId;
       if (!itemRef) {
-        run(client, ["project", "item-create", String(ref.number), "--owner", ref.owner, "--title", title, "--body", body, "--format", "json"]);
+        const created = parseJson(run(client, ["project", "item-create", String(ref.number), "--owner", ref.owner, "--title", title, "--body", body, "--format", "json"]), "created Project item");
+        const createdId = itemId(created);
+        if (!createdId) throw new BoardError(`GitHub created a draft item for phase ${phaseId} without returning its Project item ID; inspect the Project before retrying.`);
+        phaseItems[phaseId] = String(createdId);
+        // Persist the server-returned item ID before relying on the Project's
+        // forward item index, which can lag or omit an otherwise retrievable
+        // ProjectV2Item.
+        writeReadme(ref, boardId, phaseItems, false, previous, desired, operations);
         latest = readRemote(ref, { allowMissing: true });
         mapped = managedItems(latest).get(phaseId);
-        if (!mapped) throw new BoardError(`GitHub draft item for phase ${phaseId} was created without a readable item ID; retry save to reconcile it.`);
+        if (!mapped) throw new BoardError(`GitHub created draft item ${createdId} for phase ${phaseId}, but its Project item index is not readable yet. The ID is saved for a safe retry; retry after GitHub catches up.`);
         itemRef = { id: mapped.id, draftId: mapped.draftId, item: mapped.item };
         phaseItems[phaseId] = mapped.id;
       }

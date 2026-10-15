@@ -46,6 +46,7 @@ export class MockGitHub {
     failBeforeItemDelete = false,
     authScopes = ["repo", "project"],
     projectListFailure = false,
+    hideProjectItems = false,
   } = {}) {
     this.calls = [];
     this.projects = new Map();
@@ -60,6 +61,7 @@ export class MockGitHub {
     this.failBeforeItemDelete = failBeforeItemDelete;
     this.authScopes = authScopes;
     this.projectListFailure = projectListFailure;
+    this.hideProjectItems = hideProjectItems;
   }
 
   run(args, options = {}) {
@@ -112,6 +114,28 @@ export class MockGitHub {
         field.options = input.singleSelectOptions.map((option) => ({ id: `${field.id}-OPTION-${option.name}`, name: option.name }));
         return JSON.stringify({ data: { updateProjectV2Field: { projectV2Field: field } } });
       }
+      if (Array.isArray(payload.variables?.ids)) {
+        const nodes = payload.variables.ids.map((id) => {
+          for (const project of this.projects.values()) {
+            const item = project.items.find((candidate) => candidate.id === id);
+            if (!item) continue;
+            return {
+              id: item.id,
+              type: "DRAFT_ISSUE",
+              project: { id: project.id },
+              content: { __typename: "DraftIssue", id: item.content.id, title: item.title, body: item.body },
+              fieldValues: { nodes: item.fieldValues.map((value) => {
+                const field = project.fields.find((candidate) => candidate.id === value.fieldId);
+                if (value.text !== undefined) return { __typename: "ProjectV2ItemFieldTextValue", text: value.text, field: { id: field.id, name: field.name } };
+                if (value.number !== undefined) return { __typename: "ProjectV2ItemFieldNumberValue", number: value.number, field: { id: field.id, name: field.name } };
+                return { __typename: "ProjectV2ItemFieldSingleSelectValue", name: value.name, field: { id: field.id, name: field.name } };
+              }) },
+            };
+          }
+          return null;
+        });
+        return JSON.stringify({ data: { nodes } });
+      }
       const project = this.findProject(payload.variables.id);
       if (payload.query.includes("fields(first: 100)")) {
         return JSON.stringify({ data: { node: { fields: { nodes: project.fields } } } });
@@ -132,7 +156,7 @@ export class MockGitHub {
       return JSON.stringify(field);
     }
     if (root === "project" && command === "item-list") {
-      return JSON.stringify(this.project(tail).items);
+      return JSON.stringify(this.hideProjectItems ? [] : this.project(tail).items);
     }
     if (root === "project" && command === "item-create") {
       const project = this.project(tail);

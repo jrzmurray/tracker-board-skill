@@ -60,3 +60,32 @@ test("per-board client coalesces simultaneous snapshots and caps independent ret
   assert.equal(client.retryAt, 0, "a successful retry resets the board's backoff");
   await client.close();
 });
+
+test("a hung worker RPC is killed, backs off, then recovers on a fresh worker", async () => {
+  let now = 0;
+  let spawns = 0;
+  const hung = new EventEmitter();
+  hung.connected = true;
+  hung.send = (_message, callback) => { callback?.(); return true; };
+  hung.kill = () => {
+    hung.connected = false;
+    hung.emit("exit", null, "SIGTERM");
+  };
+  const recovered = fakeChild();
+  const client = createSharedBoardClient({
+    boardName: "gh-timeout",
+    targetIdentity: { backend: "github", projectId: "PVT_timeout" },
+    requestTimeoutMs: 25,
+    now: () => now,
+    random: () => 0.5,
+    spawnWorker: () => ++spawns === 1 ? hung : recovered,
+  });
+
+  await assert.rejects(client.snapshot(), { code: "TRACKERBOARD_WORKER_TIMEOUT" });
+  assert.equal(client.retryAt, 2_000);
+  assert.equal(hung.connected, false);
+  now = client.retryAt;
+  assert.equal((await client.snapshot()).board.title, "Test");
+  assert.equal(spawns, 2, "the retry starts a replacement worker after backoff");
+  await client.close();
+});

@@ -1,6 +1,6 @@
 import { BoardError } from "../board.mjs";
 import {
-  MAX_NODE_ID_BYTES, MIN_GH_VERSION, PROJECT_FIELDS, assertSizes, draftItemId, fieldByName,
+  MAX_NODE_ID_BYTES, MAX_OPERATION_RECEIPTS, MIN_GH_VERSION, PROJECT_FIELDS, assertSizes, draftItemId, fieldByName,
   isDraftItem, itemBody, itemId, itemTitle, makeMetadata, readmeOf,
   revisionToken, run, statusValue, valueOf, withMetadata,
 } from "./github-project-core.mjs";
@@ -28,7 +28,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     return phaseItems;
   }
 
-  function boardMetadata(snapshot, boardId, board, phaseItems, complete) {
+  function boardMetadata(snapshot, boardId, board, phaseItems, complete, desiredOperations) {
     const ids = wantedPhaseIds(board);
     updatePhaseMappings(snapshot, board, phaseItems);
     let pendingDelete = deletionManifest(snapshot, ids, phaseItems);
@@ -37,14 +37,21 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
       pendingDelete = pendingDelete.filter((entry) => liveItems.has(entry.itemId));
     }
     const mappings = Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || "x".repeat(MAX_NODE_ID_BYTES)]));
-    assertSizes(board, boardId, mappings, pendingDelete);
-    return makeMetadata(board, boardId, Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || ""])), pendingDelete, complete);
+    const operations = new Map();
+    for (const receipt of [...(snapshot?.metadata?.operations || []), ...desiredOperations]) {
+      const current = operations.get(receipt.id);
+      if (current && current.hash !== receipt.hash) throw new BoardError("GitHub log operation id was reused with different text.");
+      operations.set(receipt.id, receipt);
+    }
+    const receipts = [...operations.values()].slice(-MAX_OPERATION_RECEIPTS);
+    assertSizes(board, boardId, mappings, pendingDelete, receipts);
+    return makeMetadata(board, boardId, Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || ""])), pendingDelete, complete, receipts);
   }
 
-  function writeReadme(ref, boardId, phaseItems, complete, previous, desired) {
+  function writeReadme(ref, boardId, phaseItems, complete, previous, desired, operations) {
     const latest = rereadBeforeMutation(ref, previous, desired);
     if (!latest) throw new BoardError("GitHub Project is unavailable.");
-    const metadata = boardMetadata(latest, boardId, desired, phaseItems, complete);
+    const metadata = boardMetadata(latest, boardId, desired, phaseItems, complete, operations);
     const currentReadme = readmeOf(latest.project);
     const next = withMetadata(currentReadme, metadata);
     if (next === currentReadme) return latest;
@@ -134,7 +141,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     return [...byPhase.values()];
   }
 
-  function syncPass(ref, boardId, desired, { previous, starting }) {
+  function syncPass(ref, boardId, desired, { previous, starting, operations }) {
     let current = starting || readRemote(ref);
     if (previous && current?.loaded?.board) assertNoConflicts(previous, desired, current.loaded.board);
     const phaseItems = { ...(current?.metadata?.phaseItems || {}) };
@@ -142,7 +149,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
 
     // Publish the desired manifest before item mutations. Missing mappings can
     // be recovered from the phase ID in each draft body on retry.
-    writeReadme(ref, boardId, phaseItems, false, previous, desired);
+    writeReadme(ref, boardId, phaseItems, false, previous, desired, operations);
     setProjectTitle(ref, previous, desired);
 
     const phaseIds = [...wantedPhaseIds(desired)];
@@ -195,7 +202,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
 
     latest = readRemote(ref, { allowMissing: true });
     updatePhaseMappings(latest, desired, phaseItems);
-    writeReadme(ref, boardId, phaseItems, true, previous, desired);
+    writeReadme(ref, boardId, phaseItems, true, previous, desired, operations);
     return rereadBeforeMutation(ref, previous, desired);
   }
 
@@ -203,11 +210,11 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     if (previous && remote?.loaded?.board) assertNoConflicts(previous, desired, remote.loaded.board);
   }
 
-  function syncBoard(ref, boardId, desired, { previous = null, starting = null } = {}) {
+  function syncBoard(ref, boardId, desired, { previous = null, starting = null, operations = [] } = {}) {
     let current = starting || readRemote(ref);
     for (let pass = 0; pass < MAX_RECONCILIATION_PASSES; pass++) {
       const before = JSON.stringify(desired);
-      current = syncPass(ref, boardId, desired, { previous, starting: current });
+      current = syncPass(ref, boardId, desired, { previous, starting: current, operations });
       const changedDuringPass = JSON.stringify(desired) !== before;
       if (!changedDuringPass) {
         const nextRevision = revisionToken(current?.loaded?.board, current?.metadata);

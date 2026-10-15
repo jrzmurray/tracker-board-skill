@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { STATUSES } from "../skills/trackerboard/scripts/lib/board.mjs";
-import { MAX_GITHUB_BYTES, createGitHubProjectBackend, verifyGitHubCli } from "../skills/trackerboard/scripts/lib/backends/github-project.mjs";
+import { MAX_GITHUB_BYTES, createGitHubClient, createGitHubProjectBackend, verifyGitHubCli } from "../skills/trackerboard/scripts/lib/backends/github-project.mjs";
 import {
   MockGitHub, fieldValue, hasIssueWrite, harness, makeBoard, metadataOf,
   phasesOf, replacePhaseDependencies,
@@ -13,6 +17,18 @@ test("GitHub CLI version, login, and project scope are checked with precise reco
   assert.throws(() => verifyGitHubCli(fake("gh version 2.96.0", { hosts: { "github.com": [{ active: true, login: "octocat", scopes: ["repo"] }] } })), /gh auth refresh -s project/);
   assert.throws(() => verifyGitHubCli({ run(args) { if (args[0] === "--version") return "gh version 2.96.0"; throw new Error("not logged in"); } }), /gh auth login.*gh auth refresh -s project/);
   assert.equal(verifyGitHubCli(fake("gh version 2.102.0", { hosts: { "github.com": [{ active: true, scopes: ["project"] }] } })), true);
+});
+
+test("GitHub CLI commands have a finite timeout", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "trackerboard-gh-timeout-"));
+  const executable = path.join(directory, "hung-gh");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(executable, "#!/usr/bin/env node\nsetTimeout(() => {}, 10_000);\n");
+  fs.chmodSync(executable, 0o700);
+
+  const started = Date.now();
+  assert.throws(() => createGitHubClient(executable, { timeoutMs: 40 }).run(["project", "view"]), /timed out after 40ms/);
+  assert.ok(Date.now() - started < 2_000, "a hung CLI process is killed within the configured bound");
 });
 
 test("unknown OAuth scopes are checked through Project capability before setup", () => {
@@ -89,6 +105,33 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   }
   assert.equal(hasIssueWrite(mock), false);
   assert.equal(mock.calls.some(({ args }) => args[0] === "project" && args[1] === "item-create"), true);
+});
+
+test("log append retries are idempotent when GitHub saved the README manifest before losing its response", () => {
+  const mock = new MockGitHub();
+  const { backend } = harness(mock);
+  backend.create(makeBoard());
+  const before = backend.load();
+  const expectedRevision = backend.revision();
+  const operation = {
+    id: "operation-id-github-partial-01",
+    hash: createHash("sha256").update("record this once", "utf8").digest("hex"),
+  };
+  const desired = structuredClone(before);
+  desired.log.unshift({ at: "2026-10-14T12:00:00.000Z", text: "record this once" });
+  mock.failAfterReadmeSave = true;
+
+  assert.throws(
+    () => backend.save(desired, { previous: before, expectedRevision, operation }),
+    /project edit failed/,
+  );
+  const partial = backend.load();
+  assert.equal(partial.log.filter((entry) => entry.text === "record this once").length, 1);
+  assert.deepEqual(backend.getOperation(operation.id), operation);
+
+  backend.save(desired, { previous: before, expectedRevision, operation });
+  const retried = backend.load();
+  assert.equal(retried.log.filter((entry) => entry.text === "record this once").length, 1);
 });
 
 test("strips repository URL credentials and private URL components before local and Project persistence", () => {

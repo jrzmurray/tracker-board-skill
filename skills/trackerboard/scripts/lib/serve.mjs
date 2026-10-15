@@ -155,8 +155,12 @@ function validateCommand(raw) {
       exactKeys(command, ["type", "phase"], command.type);
       return { type: command.type, phase: identifier(command.phase, "phase id") };
     case "log.append":
-      exactKeys(command, ["type", "text"], "log.append");
-      return { type: command.type, text: text(command.text, "log text", MAX_TEXT_LENGTH) };
+      exactKeys(command, ["type", "text", "operationId"], "log.append");
+      return {
+        type: command.type,
+        text: text(command.text, "log text", MAX_TEXT_LENGTH),
+        ...(command.operationId === undefined ? {} : { operationId: identifier(command.operationId, "log operation id") }),
+      };
     default:
       throw new EditorInputError(`unsupported command type: ${command.type}`);
   }

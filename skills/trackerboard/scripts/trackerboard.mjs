@@ -358,7 +358,36 @@ async function main(argv) {
   const dep = args.pos[0];
   const reads = cmd === "show" || cmd === "boards" || cmd === "ls" || cmd === "render" || cmd === "refresh" ||
     (cmd === "dep" && ["list", "graph", "ready"].includes(dep));
-  await (reads || cmd === "serve" ? fn(args) : S.withLock(() => fn(args)));
+  if (reads || cmd === "serve") return fn(args);
+
+  const boardScoped = new Set([
+    "bind", "unbind", "create", "remove", "insert", "update", "delete", "rm", "dep", "log",
+    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull",
+  ]);
+  let lockName = null;
+  if (boardScoped.has(cmd)) {
+    if (cmd === "create" || cmd === "remove") {
+      lockName = args.pos[0] || args.opts.board || null;
+    } else if (cmd === "import") {
+      lockName = args.pos[0] || args.opts.board || null;
+      if (!lockName && args.opts.from) {
+        try { lockName = JSON.parse(fs.readFileSync(args.opts.from, "utf8")).name || null; }
+        catch {}
+      }
+      if (!lockName && args.opts.replace) {
+        try { lockName = S.resolveBoardName(null); }
+        catch {}
+      }
+    } else {
+      lockName = args.opts.board || null;
+      if (!lockName) {
+        try { lockName = S.resolveBoardName(null); }
+        catch {}
+      }
+    }
+  }
+  if (lockName) await S.withBoardLock(lockName, () => fn(args));
+  else await S.withLock(() => fn(args));
 }
 
 main(process.argv.slice(2)).catch((e) => {

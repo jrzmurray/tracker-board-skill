@@ -34,8 +34,10 @@ export function createSharedBoardClient({
   spawnWorker = fork,
   now = Date.now,
   random = Math.random,
+  requestTimeoutMs = 300_000,
 } = {}) {
   if (typeof boardName !== "string" || !boardName) throw new TypeError("boardName is required");
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 1_800_000) throw new TypeError("requestTimeoutMs must be from 1 through 1800000");
   const remoteTarget = targetIdentity?.backend === "github";
   let child = null;
   let nextId = 0;
@@ -48,7 +50,10 @@ export function createSharedBoardClient({
   const pending = new Map();
 
   function failPending(error) {
-    for (const request of pending.values()) request.reject(error);
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
     pending.clear();
   }
 
@@ -68,6 +73,7 @@ export function createSharedBoardClient({
       const request = pending.get(message?.id);
       if (!request) return;
       pending.delete(message.id);
+      clearTimeout(request.timer);
       if (message.ok) request.resolve(message.result);
       else request.reject(reviveError(message.error));
     });
@@ -90,12 +96,27 @@ export function createSharedBoardClient({
     if (!worker?.connected) return Promise.reject(new Error("board worker is unavailable"));
     const id = ++nextId;
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      worker.send({ id, op, ...payload }, (error) => {
-        if (!error) return;
+      const timer = setTimeout(() => {
+        const error = Object.assign(new Error(`board worker request timed out after ${requestTimeoutMs}ms`), { code: "TRACKERBOARD_WORKER_TIMEOUT" });
+        if (child === worker) child = null;
+        failPending(error);
+        try { worker.kill(); } catch {}
+      }, requestTimeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      try {
+        worker.send({ id, op, ...payload }, (error) => {
+          if (!error) return;
+          const request = pending.get(id);
+          if (!request) return;
+          clearTimeout(request.timer);
+          pending.delete(id);
+          reject(error);
+        });
+      } catch (error) {
+        clearTimeout(timer);
         pending.delete(id);
         reject(error);
-      });
+      }
     });
   }
 

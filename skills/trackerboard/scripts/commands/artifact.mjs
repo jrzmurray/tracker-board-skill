@@ -31,7 +31,7 @@ export function createArtifactCommands({ boardName, out }) {
   function refreshLines(name, local) {
     return [
       `refresh: list_files ${JSON.stringify({ slug: slugOf(local.artifactUrl) })}`,
-      `then:    trackerboard check --board ${name} --version <version from the result> --sha <sha256 of ${DOC_FILE} from the result>`,
+      `then:    trackerboard check --board ${name} --version <version from the result> --sha <sha256 of ${DOC_FILE} from the result, or "none" if the artifact has no ${DOC_FILE}>`,
     ];
   }
 
@@ -90,10 +90,16 @@ export function createArtifactCommands({ boardName, out }) {
       out(`publish: (no artifact linked; \`trackerboard page\` publishes one)`);
       return;
     }
+    if (local.artifactVersion == null) {
+      // Never publish over a state this machine has not compared: check first.
+      out("publish: not yet. This board has not been checked against its artifact, so a publish could replace someone else's board. Check first:");
+      for (const line of refreshLines(board.name, local)) out(line);
+      return;
+    }
     // publish_files sends file bytes without passing them through the model.
     // base_version makes it a compare-and-swap: it is refused if anyone
     // published since the recorded version.
-    const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion ?? "<version from list_files>", files: [{ as: DOC_FILE, path: file }] };
+    const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion, files: [{ as: DOC_FILE, path: file }] };
     out(`publish: publish_files ${JSON.stringify(call)}`);
     out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
     out("safe:    the publish is refused, never overwritten, if anyone published since that version");
@@ -138,10 +144,21 @@ export function createArtifactCommands({ boardName, out }) {
       const local = S.loadLocal(name);
       out(`ok: wrote ${file} and ${doc}`);
       if (local.artifactUrl) {
-        const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion ?? "<version from list_files>", files: [{ as: "index.html", path: file }] };
+        if (local.artifactVersion == null) {
+          out("publish: not yet. Check this board against its artifact first, then rerun `trackerboard page`:");
+          for (const line of refreshLines(name, local)) out(line);
+          return;
+        }
+        // No known published state.json (a legacy artifact): the new page needs one.
+        const withDoc = local.stateSha == null;
+        const files = [{ as: "index.html", path: file }, ...(withDoc ? [{ as: DOC_FILE, path: doc }] : [])];
+        const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion, files };
         out(`publish: publish_files ${JSON.stringify(call)}`);
-        out("(only needed when the page template changed; data updates go through push)");
-        out(`then:    trackerboard synced --board ${name} --version <version from the result> --doc ${doc}   (only if you also published ${DOC_FILE})`);
+        if (withDoc) out(`then:    trackerboard synced --board ${name} --version <version from the result> --doc ${doc}`);
+        else {
+          out("(only needed when the page template changed; data updates go through push)");
+          out(`then:    trackerboard synced --board ${name} --version <version from the result>`);
+        }
         return;
       }
       const call = { title: board.title, icon: "checklist", files: [{ as: "index.html", path: file }, { as: DOC_FILE, path: doc }] };
@@ -154,7 +171,7 @@ export function createArtifactCommands({ boardName, out }) {
       assertArtifactAttached(name);
       if (!opts.url || !/^https:\/\/claude\.ai\/(code\/)?artifact\//.test(opts.url)) throw new B.BoardError("link needs --url https://claude.ai/artifact/...");
       const local = S.loadLocal(name);
-      if (local.artifactUrl !== opts.url) { local.artifactVersion = null; local.checkedAt = null; S.dropBase(name); }
+      if (local.artifactUrl !== opts.url) { local.artifactVersion = null; local.stateSha = null; local.checkedAt = null; S.dropBase(name); }
       local.artifactUrl = opts.url;
       S.saveLocal(name, local);
       out(`ok: ${name} -> ${opts.url}`);
@@ -166,7 +183,7 @@ export function createArtifactCommands({ boardName, out }) {
       await pushInstruction(S.loadBoard(name));
     },
 
-    synced({ opts }) {
+    async synced({ opts }) {
       const name = boardName(opts);
       assertArtifactAttached(name);
       const version = String(opts.version ?? "").trim();
@@ -185,6 +202,10 @@ export function createArtifactCommands({ boardName, out }) {
       S.saveLocal(name, local);
       pruneDocs(name, opts.doc);
       out(`ok: ${name} artifact version ${version}`);
+      if (opts.doc && !sameContent(S.loadBoard(name), sent)) {
+        out("edits were made after that snapshot and are not published yet:");
+        await pushInstruction(S.loadBoard(name));
+      }
     },
 
     refresh({ opts }) {
@@ -203,18 +224,22 @@ export function createArtifactCommands({ boardName, out }) {
       assertArtifactAttached(name);
       const version = String(opts.version ?? "").trim();
       const sha = String(opts.sha ?? "").trim().toLowerCase();
-      if (!version || version === "true" || !/^[0-9a-f]{64}$/.test(sha)) throw new B.BoardError(`check needs --version <version> and --sha <64-hex sha256 of ${DOC_FILE}>, both from the list_files result`);
+      const none = sha === "none";
+      if (!version || version === "true" || !(none || /^[0-9a-f]{64}$/.test(sha))) throw new B.BoardError(`check needs --version <version> and --sha <64-hex sha256 of ${DOC_FILE}, or "none" if the artifact has none>, both from the list_files result`);
       const local = S.loadLocal(name);
       const now = new Date().toISOString();
-      if (local.stateSha !== sha && !opts.overwrite) {
+      const recorded = local.stateSha ?? null;
+      const same = none ? recorded == null : recorded === sha;
+      if (!same && !opts.overwrite) {
         out(`diverged: the published ${DOC_FILE} was changed by another writer. Nothing was overwritten, and your local edits are safe.`);
         out("next:    stop and ask the user which to do. Do not guess.");
         out(`  keep theirs and merge yours in (reads the whole board, costs tokens): read_file ${JSON.stringify({ slug: slugOf(local.artifactUrl), paths: [DOC_FILE] })}, copy it to ${remoteFile(name)}, then trackerboard pull --board ${name} --version ${version}`);
         out(`  or publish yours over theirs: trackerboard check --board ${name} --version ${version} --sha ${sha} --overwrite`);
         return;
       }
-      S.saveLocal(name, { ...local, artifactVersion: version, stateSha: sha, checkedAt: now });
-      out(`ok: ${name} ${local.stateSha === sha ? "is current" : "will overwrite the published board on the next push"} (version ${version})`);
+      S.saveLocal(name, { ...local, artifactVersion: version, stateSha: none ? null : sha, checkedAt: now });
+      out(`ok: ${name} ${same ? "is current" : "will overwrite the published board on the next push"} (version ${version})`);
+      if (none) out(`note: the artifact has no ${DOC_FILE} (a legacy page). Run \`trackerboard page\` to publish the new page together with it.`);
       const saved = S.loadBase(name);
       if (opts.overwrite || !saved || !sameContent(S.loadBoard(name), saved)) {
         out("local changes are not published yet:");
@@ -234,15 +259,17 @@ export function createArtifactCommands({ boardName, out }) {
       const from = opts.from || remoteFile(name);
       // Version ids are opaque, so the only comparison is "unchanged". When
       // it has moved, the published document is needed.
-      if (version !== local.artifactVersion && !fs.existsSync(from)) {
+      const haveFile = fs.existsSync(from);
+      if (version !== local.artifactVersion && !haveFile) {
         throw new B.BoardError(`artifact version ${version} is not the recorded ${local.artifactVersion ?? "(none)"}; read the published document first:\n${readFileLines(name, local).join("\n")}`);
       }
       const board = S.loadBoard(name);
       const base = S.loadBase(name);
       const now = new Date().toISOString();
 
-      if (version === local.artifactVersion) {
-        if (!base && fs.existsSync(from)) S.saveBase(name, readRemote(name, from));
+      // A downloaded document always means "merge it", even at the recorded
+      // version (e.g. after a deliberate --overwrite check): never skip it.
+      if (version === local.artifactVersion && !haveFile) {
         S.saveLocal(name, { ...local, checkedAt: now });
         fs.rmSync(remoteFile(name), { force: true });
         out(`ok: ${name} is current at artifact version ${version}`);
@@ -258,13 +285,17 @@ export function createArtifactCommands({ boardName, out }) {
       const remoteSha = sha256(fs.readFileSync(from));
       // Without a recorded base, assume nothing local is unpublished.
       const prefer = opts.theirs ? "remote" : opts.ours ? "local" : null;
-      const { board: merged, conflicts, notes } = !base || sameContent(board, base)
-        ? { board: remote, conflicts: [], notes: [] }
+      // With no merge base nothing can say which edits are unpublished, so a
+      // differing local board must be chosen explicitly, never replaced.
+      if (!base && !sameContent(board, remote) && !prefer) {
+        throw new B.BoardError(`no merge base is recorded for ${name} and this board differs from the artifact's. Nothing was changed. Ask the user: --theirs (use the artifact's board, losing local edits) or --ours (keep this board, replacing the artifact's on the next push).`);
+      }
+      const { board: merged, conflicts, notes } = !base && prefer === "local" ? { board, conflicts: [], notes: [] }
+        : !base || sameContent(board, base) ? { board: remote, conflicts: [], notes: [] }
         : mergeBoards(content(base), content(board), content(remote), { prefer });
       if (conflicts.length) {
         throw new B.BoardError(`artifact version ${version} conflicts with unpublished changes here:\n  ${conflicts.join("\n  ")}\nRerun with --theirs (keep the artifact's) or --ours (keep these), or ask the user which.`);
       }
-      if (!base && !sameContent(board, remote)) out("note: no merge base was recorded, so the local board was replaced by the artifact's");
       B.validate(merged);
       S.saveBoard(merged);
       S.saveBase(name, remote);

@@ -89,7 +89,7 @@ The board is published as a file, `state.json`, next to the page. The page holds
 Make that call with `mcp__claude-artifacts__publish_files` (load it with ToolSearch if it is deferred), then run the `synced` line with the version id from the result. The call changes only `state.json`; the page and any other files are kept. Batch several writes, then publish once: only the last write's steps matter.
 
 - **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `list_files` call, then `check`. If the board itself changed, `check` stops and offers `--overwrite` or a deliberate `pull` merge; otherwise it prints a new publish step. Make that call.
-- **No recorded version:** the step prints `<version from list_files>`; make that call and use its version as `base_version`.
+- **No recorded version:** `push` and `page` print the check steps instead of a publish, because a publish could replace a board this machine never compared. Run `trackerboard check` (use `--sha none` if the artifact has no `state.json`, e.g. a legacy page; then `page` republishes the page together with one).
 
 Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 

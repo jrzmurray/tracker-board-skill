@@ -104,9 +104,14 @@ test("push prints a publish_files call pinned to the recorded version", () => {
   run(["create", "b"]);
   run(["insert", "--phase", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  // An unchecked board never prints a publish: it could replace someone's board.
+  const unchecked = run(["push"]).stdout;
+  assert.match(unchecked, /publish: not yet/);
+  assert.doesNotMatch(unchecked, /publish_files \{/);
+  run(["check", "--version", "v0", "--sha", "none"]);
   let out = run(["push"]).stdout;
   let call = publishState(out);
-  assert.equal(call.base_version, "<version from list_files>");
+  assert.equal(call.base_version, "v0");
   assert.equal(call.slug, "abc123");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].id, "P1");
   assert.ok(call.file_path.startsWith(home));
@@ -194,6 +199,7 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   run(["insert", "--phase", "P1"]);
   run(["insert", "--phase", "P2", "--deps", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  run(["check", "--version", "v0", "--sha", "none"]);
   let c = call(run(["push"]).stdout);
   run(["synced", "--version", "v1", "--doc", c.file_path]);
 
@@ -230,6 +236,7 @@ test("check compares the published hash and reads nothing", () => {
   run(["create", "b"]);
   run(["insert", "--phase", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  run(["check", "--version", "v0", "--sha", "none"]);
   const c = publishState(run(["push"]).stdout);
   run(["synced", "--version", "v1", "--doc", c.file_path]);
   const sha = createHash("sha256").update(fs.readFileSync(c.file_path)).digest("hex");
@@ -247,6 +254,57 @@ test("check compares the published hash and reads nothing", () => {
   assert.match(o, /will overwrite/);
   assert.equal(publishState(o).base_version, "v3");
   run(["check", "--version", "v3", "--sha", "nope"], { ok: false });
+});
+
+test("review regressions: first publish, overwrite then merge, no base, late edits, legacy page", () => {
+  const { home, run } = sandbox();
+  const remote = path.join(home, "remote", "b", "state.json");
+  let cached = null;
+  const putRemote = (mutate) => {
+    try { cached = fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"); } catch {}
+    const doc = JSON.parse(cached);
+    mutate(doc);
+    fs.mkdirSync(path.dirname(remote), { recursive: true });
+    fs.writeFileSync(remote, JSON.stringify(doc));
+  };
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+
+  // 1. An artifact that already holds a state.json is never published over blind.
+  const other = "a".repeat(64);
+  assert.match(run(["check", "--version", "v1", "--sha", other]).stdout, /diverged:/);
+  assert.doesNotMatch(run(["push"]).stdout, /publish_files \{/);
+
+  // 4. A legacy artifact (no state.json): the page is republished with one.
+  run(["check", "--version", "v1", "--sha", "none"]);
+  const page = JSON.parse(run(["page"]).stdout.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(page.files.map((f) => f.as), ["index.html", "state.json"]);
+  const c = publishState(run(["push"]).stdout);
+  run(["synced", "--version", "v2", "--doc", c.file_path]);
+
+  // 5. An edit made after the snapshot is not lost by synced.
+  run(["update", "--phase", "P1", "--owner", "late"]);
+  const snap = publishState(run(["push"]).stdout);
+  run(["update", "--phase", "P1", "--owner", "later"]);
+  assert.match(run(["synced", "--version", "v3", "--doc", snap.file_path]).stdout, /edits were made after that snapshot[^]*publish_files/);
+
+  // 2. --overwrite, then a deliberate merge at the same version still merges.
+  putRemote((d) => { d.waves[0].phases[0].status = "done"; });
+  run(["check", "--version", "v4", "--sha", "b".repeat(64), "--overwrite"]);
+  const pulled = run(["pull", "--version", "v4"]).stdout;
+  assert.match(pulled, /pulled b artifact version v4/);
+  assert.match(run(["show"]).stdout, /P1 +done/);
+
+  // 3. No merge base: a differing board is never replaced silently.
+  run(["link", "--url", "https://claude.ai/artifact/other"]);
+  run(["update", "--phase", "P1", "--owner", "mine"]);
+  putRemote((d) => { d.waves[0].phases[0].owner = "theirs"; });
+  const nb = run(["pull", "--version", "v1"], { ok: false });
+  assert.match(nb.stderr, /no merge base is recorded/);
+  assert.match(run(["show"]).stdout, /@mine/);
+  run(["pull", "--version", "v1", "--theirs"]);
+  assert.match(run(["show"]).stdout, /@theirs/);
 });
 
 test("stale edits to a linked board apply; only Claude harnesses see publish steps", () => {

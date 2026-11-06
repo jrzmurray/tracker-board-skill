@@ -151,7 +151,8 @@ trackerboard <command> [options]
   Environment
     TRACKERBOARD_BOARD             Board name to use when --board is omitted.
     TRACKERBOARD_HOME              Data directory (default: ~/.trackerboard).
-    TRACKERBOARD_FRESH_SECONDS     Seconds a refresh stays valid before writes are refused (default: 120).
+    TRACKERBOARD_FRESH_SECONDS     Seconds before a read of a linked board notes a stale check (default: 120). Writes are never refused.
+    TRACKERBOARD_PUBLISHER         1/0 forces whether publish steps are printed (default: on when CLAUDECODE is set).
     XDG_DATA_HOME                  Base directory for backend config (default: ~/.local/share).
     TRACKERBOARD_DATA_HOME          Backend config directory (default: ~/.local/share/trackerboard).
 ```

@@ -44,13 +44,13 @@ trackerboard log "JR ruled the EXCLUDED sites"
 
 For every backend, read with `trackerboard show` before work and make changes through the CLI. GitHub rereads and reconciles before narrow writes, but its concurrency protection is best effort because GitHub does not provide compare-and-swap for these updates. Coordinate simultaneous writers and inspect the board after concurrent changes.
 
-For a board linked to a Claude artifact, other agents may publish at any time. The CLI tracks the published version and won't let you write from a stale copy. Run `trackerboard refresh` before reading or writing that linked board.
+For a board linked to a Claude artifact, other agents may publish at any time. Edits always apply locally and are never blocked. The publish is the guarded step: it is refused, never overwritten, if anyone published since the recorded version. Claude agents run `trackerboard refresh` before reading a linked board and publish after editing. Agents without the claude-artifacts tools just edit; the CLI prints `saved locally` and a Claude agent publishes.
 
 **Refresh a linked Claude artifact:** `trackerboard refresh` prints a `list_files` call (a few lines, no board data). Make it, then run the printed `trackerboard check --version V --sha H` using the version and the `state.json` sha256 from the result. `check` only compares the hash with the last push; it reads nothing. If the hash differs, another writer changed the board: stop and ask the user. They choose `check ... --overwrite` (your board replaces theirs on the next push) or a deliberate merge (`read_file`, copy to the printed path, `trackerboard pull --version V`; this puts the whole board in context). Don't run `show` or read `state.json` unless asked.
 - If nothing changed, `pull` does nothing.
 - Otherwise it merges the published board with unpublished local changes. Conflicts on the same field stop the pull; ask which value to keep, then rerun with `--theirs` or `--ours`.
 
-Writes to a linked artifact are refused if it has not been checked within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`). A `synced` counts as a check, so a batch of writes made after refresh or publish goes straight through.
+A read of a linked board notes when it was last checked, after 120 seconds (`TRACKERBOARD_FRESH_SECONDS`). Writes are never refused for that. Publish steps are shown only to Claude harnesses (`CLAUDECODE` set, or `TRACKERBOARD_PUBLISHER=1`).
 
 ## Backends and migration
 

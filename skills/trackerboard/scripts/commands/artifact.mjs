@@ -8,6 +8,11 @@ import { DOC_FILE, DOC_LIMIT, docBody, renderPage } from "../lib/render.mjs";
 
 const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
 
+// Only a Claude harness has the claude-artifacts tools the publish and
+// refresh steps call. Every other agent edits the local board and never sees
+// those steps. TRACKERBOARD_PUBLISHER=1|0 overrides the detection.
+const isPublisher = () => process.env.TRACKERBOARD_PUBLISHER ? process.env.TRACKERBOARD_PUBLISHER === "1" : !!process.env.CLAUDECODE;
+
 // The artifact slug is the last path segment of its claude.ai URL.
 const slugOf = (url) => String(url).replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
 
@@ -46,12 +51,6 @@ export function createArtifactCommands({ boardName, out }) {
     ];
   }
 
-  function requireFresh(name) {
-    const local = S.loadLocal(name);
-    if (!linked(local) || checkedAgo(local) <= FRESH_SECONDS) return;
-    throw new B.BoardError(`${name} was last checked against its artifact ${age(checkedAgo(local))}; other agents may have written it. Refresh, then repeat this command:\n${refreshLines(name, local).join("\n")}`);
-  }
-
   function assertArtifactAttached(name) {
     if (S.loadLocal(name).artifactDetached) {
       throw new B.BoardError(`${name}'s Claude artifact was detached during backend migration; artifact refresh/pull/push is unavailable for this board`);
@@ -65,7 +64,7 @@ export function createArtifactCommands({ boardName, out }) {
 
   function staleNote(name, toStderr = false) {
     const local = S.loadLocal(name);
-    if (linked(local) && checkedAgo(local) > FRESH_SECONDS) {
+    if (isPublisher() && linked(local) && checkedAgo(local) > FRESH_SECONDS) {
       (toStderr ? (text) => process.stderr.write(text.trimStart() + "\n") : out)(`\nnote: last checked against the artifact ${age(checkedAgo(local))}; \`trackerboard refresh\` first if others may have written it`);
     }
   }
@@ -97,15 +96,20 @@ export function createArtifactCommands({ boardName, out }) {
     const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion ?? "<version from list_files>", files: [{ as: DOC_FILE, path: file }] };
     out(`publish: publish_files ${JSON.stringify(call)}`);
     out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
+    out("safe:    the publish is refused, never overwritten, if anyone published since that version");
   }
 
   async function commit(board, opts, summary) {
-    requireFresh(board.name);
     B.appendLog(board, opts.log);
     const expected = process.env.TRACKERBOARD_EXPECTED_REVISION;
     S.saveBoard(board, { expectedRevision: expected == null ? undefined : /^\d+$/.test(expected) ? Number(expected) : expected });
     out(`ok: ${summary}`);
-    if (S.loadLocal(board.name).artifactDetached) return;
+    const local = S.loadLocal(board.name);
+    if (local.artifactDetached) return;
+    if (!isPublisher()) {
+      if (local.artifactUrl) out("saved locally. Nothing else to do: a Claude agent publishes this board, and it never overwrites anyone's changes.");
+      return;
+    }
     await pushInstruction(board);
   }
 
@@ -203,7 +207,11 @@ export function createArtifactCommands({ boardName, out }) {
       const local = S.loadLocal(name);
       const now = new Date().toISOString();
       if (local.stateSha !== sha && !opts.overwrite) {
-        throw new B.BoardError(`${name}: the published ${DOC_FILE} differs from the last push (another writer changed it). Not read. Either replace it with this board on the next push: trackerboard check --board ${name} --version ${version} --sha ${sha} --overwrite\nor merge it in deliberately (reads the document, costs tokens): read_file ${JSON.stringify({ slug: slugOf(local.artifactUrl), paths: [DOC_FILE] })}, copy it to ${remoteFile(name)}, then trackerboard pull --board ${name} --version ${version}`);
+        out(`diverged: the published ${DOC_FILE} was changed by another writer. Nothing was overwritten, and your local edits are safe.`);
+        out("next:    stop and ask the user which to do. Do not guess.");
+        out(`  keep theirs and merge yours in (reads the whole board, costs tokens): read_file ${JSON.stringify({ slug: slugOf(local.artifactUrl), paths: [DOC_FILE] })}, copy it to ${remoteFile(name)}, then trackerboard pull --board ${name} --version ${version}`);
+        out(`  or publish yours over theirs: trackerboard check --board ${name} --version ${version} --sha ${sha} --overwrite`);
+        return;
       }
       S.saveLocal(name, { ...local, artifactVersion: version, stateSha: sha, checkedAt: now });
       out(`ok: ${name} ${local.stateSha === sha ? "is current" : "will overwrite the published board on the next push"} (version ${version})`);

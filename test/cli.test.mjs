@@ -18,7 +18,7 @@ function sandbox() {
   git("init", "-q", "-b", "main");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
   const run = (args, { cwd = repo, ok = true, env: extra = {} } = {}) => {
-    const env = { ...process.env, TRACKERBOARD_HOME: home, ...extra };
+    const env = { ...process.env, TRACKERBOARD_HOME: home, TRACKERBOARD_PUBLISHER: "1", ...extra };
     delete env.TRACKERBOARD_BOARD;
     const r = spawnSync("node", [CLI, ...args], { cwd, env, encoding: "utf8" });
     if (ok && r.status !== 0) throw new Error(`${args.join(" ")} failed: ${r.stderr}`);
@@ -239,9 +239,9 @@ test("check compares the published hash and reads nothing", () => {
   assert.match(run(["check", "--version", "v2", "--sha", sha]).stdout, /is current \(version v2\)/);
   // Another writer changed state.json: stop without reading it.
   const other = "f".repeat(64);
-  const r = run(["check", "--version", "v3", "--sha", other], { ok: false });
-  assert.match(r.stderr, /differs from the last push/);
-  assert.match(r.stderr, /--overwrite/);
+  const r = run(["check", "--version", "v3", "--sha", other]);
+  assert.match(r.stdout, /diverged: .*Nothing was overwritten/);
+  assert.match(r.stdout, /--overwrite/);
   // Accepting the overwrite pins the next push to the live version.
   const o = run(["check", "--version", "v3", "--sha", other, "--overwrite"]).stdout;
   assert.match(o, /will overwrite/);
@@ -249,16 +249,23 @@ test("check compares the published hash and reads nothing", () => {
   run(["check", "--version", "v3", "--sha", "nope"], { ok: false });
 });
 
-test("writes to a linked board need a recent refresh", () => {
+test("stale edits to a linked board apply; only Claude harnesses see publish steps", () => {
   const { run } = sandbox();
   run(["create", "b"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   run(["synced", "--version", "v1"]);
   const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
-  const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
-  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: list_files \{"slug":/);
+  // A stale check no longer blocks an edit; the publish is the guarded step.
+  const r = run(["insert", "--phase", "P1"], stale);
+  assert.match(r.stdout, /publish: publish_files/);
+  assert.match(r.stdout, /safe: .*refused, never overwritten/);
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
-  run(["insert", "--phase", "P1"]);
+  // Any other agent just edits: no refresh or publish steps, no complaint.
+  const other = { env: { TRACKERBOARD_PUBLISHER: "0" } };
+  const o = run(["insert", "--phase", "P2"], other).stdout;
+  assert.match(o, /saved locally\. Nothing else to do/);
+  assert.doesNotMatch(o, /publish_files|refresh|list_files/);
+  assert.doesNotMatch(run(["show"], { env: { TRACKERBOARD_PUBLISHER: "0", TRACKERBOARD_FRESH_SECONDS: "-1" } }).stdout, /note: last checked/);
 });
 
 test("show filters by lane, status and owner, and lists ids or PRs", () => {

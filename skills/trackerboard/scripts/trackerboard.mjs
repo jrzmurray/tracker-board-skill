@@ -59,8 +59,10 @@ Publish (Claude-specific: prints claude-artifacts tool calls: publish_files, lis
   pull --version N [--from FILE] [--theirs | --ours]
                           Merge the fetched document into the local board
                           (no-op when N is the recorded version).
-  Writes to a linked board need a refresh within ${FRESH_SECONDS_HELP}s
-  (TRACKERBOARD_FRESH_SECONDS); otherwise they print the refresh steps and stop.
+  Edits always apply locally. Only a Claude harness (CLAUDECODE set, or
+  TRACKERBOARD_PUBLISHER=1) is shown the publish/refresh steps; other agents
+  just edit, and a Claude agent publishes. Reads note a stale check after
+  ${FRESH_SECONDS_HELP}s (TRACKERBOARD_FRESH_SECONDS).
   render [--out FILE]     Write a static HTML snapshot (for local preview).
 
 Generated boards (the input format is board.schema.json)

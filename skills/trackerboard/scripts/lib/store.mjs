@@ -5,7 +5,7 @@
 //   boards/<name>.local.json  machine-local state: bindings, artifact url, db version,
 //                             when the artifact was last checked
 //   bases/<name>.json         the published document as of that db version (merge base)
-//   remote/<name>/            where `refresh` asks ArtifactData to save the published document
+//   remote/<name>/            where `refresh` expects the agent to save the db_get document
 //   out/docs/<name>-<hash>.json  db document bodies, written by every write and `push`
 //   out/<name>.html           static render, written by `render`
 

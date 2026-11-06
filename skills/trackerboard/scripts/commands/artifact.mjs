@@ -8,15 +8,21 @@ import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage } 
 
 const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
 
+// The artifact slug is the last path segment of its claude.ai URL.
+const slugOf = (url) => String(url).replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
+const docPath = `${DOC_COLLECTION}/${DOC_ID}`;
+
 export function createArtifactCommands({ boardName, out }) {
   const linked = (local) => !local.artifactDetached && !!local.artifactUrl && local.dbVersion != null;
   const checkedAgo = (local) => local.checkedAt ? (Date.now() - Date.parse(local.checkedAt)) / 1000 : Infinity;
   const age = (seconds) => seconds === Infinity ? "never" : seconds < 90 ? `${Math.round(seconds)}s ago` : seconds < 5400 ? `${Math.round(seconds / 60)}m ago` : `${Math.round(seconds / 3600)}h ago`;
 
   function refreshLines(name, local) {
-    const call = { action: "get", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, out_dir: S.remoteDir(name) };
+    const call = { slug: slugOf(local.artifactUrl), path: docPath };
+    const saveTo = path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
     return [
-      `refresh: ArtifactData ${JSON.stringify(call)}`,
+      `refresh: db_get ${JSON.stringify(call)}`,
+      `then:    save the document's JSON (the data, not the summary) to ${saveTo}`,
       `then:    trackerboard pull --board ${name} --version <version from the result>`,
     ];
   }
@@ -66,9 +72,10 @@ export function createArtifactCommands({ boardName, out }) {
       out(`publish: (no artifact linked; \`trackerboard page\` publishes one)`);
       return;
     }
-    const call = { action: "set", url: local.artifactUrl, collection: DOC_COLLECTION, doc_id: DOC_ID, file_path: file };
-    if (local.dbVersion != null) call.if_version = local.dbVersion;
-    out(`publish: ArtifactData ${JSON.stringify(call)}`);
+    const op = { op: "set", path: docPath };
+    if (local.dbVersion != null) op.ifVersion = local.dbVersion;
+    out(`publish: db_write ${JSON.stringify({ slug: slugOf(local.artifactUrl), ops: [op] })}`);
+    out(`         data = the contents of ${file} (db_write takes the document inline; read the file and pass its JSON)`);
     out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
   }
 
@@ -104,11 +111,12 @@ export function createArtifactCommands({ boardName, out }) {
       const local = S.loadLocal(name);
       out(`ok: wrote ${file}`);
       if (local.artifactUrl) {
-        out(`publish: Artifact {"action":"publish","url":"${local.artifactUrl}","file_path":"${file}"}`);
+        out(`publish: publish_files ${JSON.stringify({ slug: slugOf(local.artifactUrl), base_version: "<version from get_artifact>", files: [{ as: "index.html", path: file }] })}`);
         out("(only needed when the page template changed; data updates go through push)");
         return;
       }
-      out(`publish: Artifact ${JSON.stringify({ action: "publish", file_path: file, icon: "checklist", capabilities: CAPABILITIES, description: `Phase tracker for ${board.title}` })}`);
+      out(`publish: publish_files ${JSON.stringify({ title: board.title, icon: "checklist", files: [{ as: "index.html", path: file }] })}`);
+      out(`then:    declare_capabilities for the new artifact: ${JSON.stringify(CAPABILITIES)}   (see describe_capabilities)`);
       out(`then:    trackerboard link --board ${name} --url <artifact url>   and   trackerboard push --board ${name}`);
     },
 
@@ -164,7 +172,7 @@ export function createArtifactCommands({ boardName, out }) {
       const name = boardName(opts);
       assertArtifactAttached(name);
       const version = Number(opts.version);
-      if (!Number.isInteger(version) || version < 1) throw new B.BoardError("pull needs --version <version from the ArtifactData result>");
+      if (!Number.isInteger(version) || version < 1) throw new B.BoardError("pull needs --version <version from the db_get/db_write result>");
       const from = opts.from || path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
       const remote = JSON.parse(fs.readFileSync(from, "utf8"));
       delete remote.layout; // derived; recomputed on every push

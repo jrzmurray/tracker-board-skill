@@ -49,12 +49,12 @@ Phase fields
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
-Publish (Claude-specific: prints Artifact/ArtifactData tool calls; the CLI never contacts Claude)
+Publish (Claude-specific: prints claude-artifacts tool calls: publish_files, db_get, db_write; the CLI never contacts Claude)
   page                    Write the publishable page and print the first-publish steps.
   link --url URL          Record the artifact URL for this board.
-  push                    Write the db document and print the ArtifactData call.
-  synced --version N [--doc FILE]  Record the db version an ArtifactData write returned.
-  refresh                 Print the ArtifactData get that checks the published board.
+  push                    Write the db document and print the db_write call.
+  synced --version N [--doc FILE]  Record the db version a db_write returned.
+  refresh                 Print the db_get that checks the published board.
   pull --version N [--from FILE] [--theirs | --ours]
                           Merge the fetched document into the local board
                           (no-op when N is the recorded version).

@@ -114,13 +114,13 @@ trackerboard <command> [options]
     --log "<text>"                 Also record the change in "Recent changes" (any write).
     @file                          As a field value: read it from a file; - reads stdin.
 
-  Publish (Claude-specific: these steps print Claude `Artifact` / `ArtifactData` tool calls)
+  Publish (Claude-specific: these steps print Claude `publish_files` / `db_get` / `db_write` tool calls)
     page                           Write the publishable page and print the first-publish steps.
     link --url URL                 Record the board's artifact URL.
-    push                           Write the db document and print the ArtifactData call.
-    synced --version N             Record the db version an ArtifactData write returned.
+    push                           Write the db document and print the db_write call.
+    synced --version N             Record the db version a db_write returned.
       --doc FILE                     The document that was written.
-    refresh                        Print the ArtifactData get that checks the published board.
+    refresh                        Print the db_get that checks the published board.
     pull --version N               Merge the fetched document into the local board (no-op if current).
       --from FILE                    Read the fetched document from FILE.
       --theirs                       On conflict, keep the artifact's value.
@@ -161,18 +161,18 @@ These commands are available in the CLI installed from this repository. Older st
 
 The core CLI does not contact Claude or claude.ai. The JSON backend reads and writes local files; the existing `trackerboard github` overlay uses the GitHub CLI (`gh`). Only the commands below need an agent that can call Claude's artifact tools.
 
-Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `Artifact` or `ArtifactData` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
+Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `publish_files`, `db_get` or `db_write` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
 
 | Command | Claude-specific part |
 | --- | --- |
-| `page` | Prints the `Artifact` publish call that creates the page, with the `db` capability. |
+| `page` | Prints the `publish_files` call that creates the page, plus the `db` capability to declare. |
 | `link --url URL` | Records the claude.ai artifact URL for the board. |
-| `push` | Prints the `ArtifactData set` call that writes the board to the artifact's database. |
-| `synced` | Records the db version that `ArtifactData` returned. |
-| `refresh` | Prints the `ArtifactData get` call that reads the published board from claude.ai. |
-| `pull` | Merges the document that `ArtifactData get` saved locally. |
+| `push` | Prints the `db_write` call that writes the board to the artifact's database. |
+| `synced` | Records the db version that `db_write` returned. |
+| `refresh` | Prints the `db_get` call that reads the published board from claude.ai. |
+| `pull` | Merges the document saved locally from `db_get`. |
 
-Once a board is linked, every write also prints a `publish:` step (an `ArtifactData set`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).
+Once a board is linked, every write also prints a `publish:` step (a `db_write`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).
 
 Everything else (`create`, `bind`, `unbind`, `boards`, `remove`, `show`, `insert`, `update`, `delete`, `dep`, `log`, `import`, `github`, `refresh-prs`, `backend`, `migrate`, `serve`, `render`) works without Claude. An unlinked board has no refresh or publish steps; `render` writes a static HTML snapshot you can open anywhere. The artifact integration is optional. Migration to SQLite or GitHub Projects leaves the original artifact untouched and detached; it becomes a read-only snapshot and its refresh/pull/push workflow is no longer available.
 
@@ -250,7 +250,7 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 | `boards/<name>.local.json` | this machine's bindings, backend override, artifact URL/version and local backend metadata |
 | `bases/<name>.json` | the published document as of the recorded db version (the merge base for `pull`) |
 | `recovery/<name>-<timestamp>.json` | mode-0600 pre-migration recovery copies; not active boards |
-| `remote/<name>/` | where `refresh` has `ArtifactData get` save the published document |
+| `remote/<name>/` | where `refresh` has the agent save the published document |
 | `out/docs/<name>-<hash>.json` | the db document written on each change, one file per snapshot |
 | `out/<name>.page.html` | the publishable page |
 

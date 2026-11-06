@@ -91,27 +91,35 @@ test("delete accepts a positional phase; update rejects unknown flags", () => {
   assert.match(r.stderr, /unexpected option\(s\): --colour/);
 });
 
-test("push prints an ArtifactData call pinned to the recorded version", () => {
+// Parses the printed `db_write` step into { slug, path, if_version, file_path }.
+function dbWrite(out) {
+  const call = JSON.parse(out.match(/db_write (\{.*\})/)[1]);
+  const [op] = call.ops;
+  assert.equal(op.op, "set");
+  return { slug: call.slug, path: op.path, if_version: op.ifVersion, file_path: out.match(/data = the contents of (\S+\.json)/)[1] };
+}
+
+test("push prints a db_write call pinned to the recorded version", () => {
   const { home, run } = sandbox();
   run(["create", "b"]);
   run(["insert", "--phase", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   let out = run(["push"]).stdout;
-  let call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  let call = dbWrite(out);
   assert.equal(call.if_version, undefined);
-  assert.equal(call.collection, "board");
-  assert.equal(call.doc_id, "state");
+  assert.equal(call.slug, "abc123");
+  assert.equal(call.path, "board/state");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].id, "P1");
   assert.ok(call.file_path.startsWith(home));
 
   run(["synced", "--version", "7"]);
   out = run(["update", "--phase", "P1", "--status", "done"]).stdout;
-  call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  call = dbWrite(out);
   assert.equal(call.if_version, 7);
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].status, "done");
 
   out = run(["insert", "--phase", "P2", "--deps", "P1"]).stdout;
-  call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  call = dbWrite(out);
   const doc = JSON.parse(fs.readFileSync(call.file_path, "utf8"));
   assert.equal(doc.layout.engine, "elk-layered");
   assert.deepEqual(doc.layout.edges.map((e) => [e.from, e.to]), [["P1", "P2"]]);
@@ -130,7 +138,7 @@ test("page and render embed the board safely", () => {
   const md = html.match(/<script id="tb-md">(.*?)<\/script>/s)[1];
   assert.match(md, /markdownit/);
   assert.doesNotMatch(md, /<\/script|sourceMappingURL/i);
-  assert.match(run(["page"]).stdout, /"capabilities":\{"db"/);
+  assert.match(run(["page"]).stdout, /declare_capabilities .*\{"db"/);
 });
 
 test("field values can come from a file", () => {
@@ -168,7 +176,7 @@ test("owner is a phase field: set, shown, cleared", () => {
 
 test("refresh/pull merges a concurrent publish with unpublished local changes", () => {
   const { home, run } = sandbox();
-  const call = (out) => JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  const call = dbWrite;
   const publishRemote = (mutate) => {
     const file = path.join(home, "remote", "b", "board", "state.json");
     const doc = JSON.parse(fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"));
@@ -186,9 +194,10 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   // Another agent publishes v2 (P1 done) while this one sets P2's owner.
   publishRemote((d) => { d.waves[0].phases[0].status = "done"; d.log.unshift({ at: "2030-01-01T00:00:00.000Z", text: "P1 merged" }); });
   run(["update", "--phase", "P2", "--owner", "me"]);
-  c = call(run(["refresh"]).stdout);
-  assert.equal(c.action, "get");
-  assert.equal(c.out_dir, path.join(home, "remote", "b"));
+  const refreshOut = run(["refresh"]).stdout;
+  c = JSON.parse(refreshOut.match(/db_get (\{.*\})/)[1]);
+  assert.deepEqual(c, { slug: "abc123", path: "board/state" });
+  assert.ok(refreshOut.includes(path.join(home, "remote", "b", "board", "state.json")));
 
   let out = run(["pull", "--version", "2"]).stdout;
   assert.match(out, /pulled b db version 2 \(was 1\)/);
@@ -215,7 +224,7 @@ test("writes to a linked board need a recent refresh", () => {
   run(["synced", "--version", "1"]);
   const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
   const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
-  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: ArtifactData \{"action":"get"/);
+  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: db_get \{"slug":/);
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
   run(["insert", "--phase", "P1"]);
 });

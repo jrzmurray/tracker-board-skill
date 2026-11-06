@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BoardError, SCHEMA, normalizeBoard } from "../board.mjs";
 import { mergeBoards } from "../merge.mjs";
 import * as core from "./github-project-core.mjs";
+import * as api from "./github-project-api.mjs";
 import { createGitHubProjectFieldManager } from "./github-project-fields.mjs";
 import { createGitHubProjectSynchronizer } from "./github-project-sync.mjs";
 
@@ -9,10 +10,14 @@ const {
   AUTH_RECOVERY, GENERIC_PROJECT_TITLE, MIN_GH_VERSION, PROJECT_FIELDS,
   assertSizes, conflicts, createGitHubClient, draftItemId, fieldByName,
   graphql, isDraftItem, isPrivate, itemBody, itemId, itemTitle,
-  listFromJson, parseGitHubRepo, parseJson, phaseDataFromBody,
-  projectDetails, projectId, projectNumber, readMetadata, readmeOf, revisionConflict,
-  revisionToken, run, statusValue, valueOf, verifyGitHubCli,
+  parseGitHubRepo, phaseDataFromBody,
+  projectId, projectItems, projectNumber, readMetadata, readmeOf, revisionConflict,
+  revisionToken, statusValue, valueOf, verifyGitHubCli,
 } = core;
+const {
+  createProject: createRemoteProject, deleteProject, projectDetails, projectFields,
+  projectsForOwner, updateProject,
+} = api;
 export function createGitHubProjectBackend(context, client = createGitHubClient(context?.config?.github?.executable || process.env.TRACKERBOARD_GH || "gh")) {
   let local = { ...(context?.local || {}) };
   let cachedRevision = null;
@@ -73,28 +78,13 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
   }
 
   function runProjectList(owner) {
-    const parsed = parseJson(run(client, ["project", "list", "--owner", owner, "--limit", "100", "--format", "json"]), "project list");
-    return listFromJson(parsed, ["projects", "items"]);
+    return projectsForOwner(client, owner);
   }
 
   function projectSnapshot(ref) {
     const details = projectDetails(client, ref);
-    const fieldsParsed = parseJson(run(client, ["project", "field-list", String(ref.number), "--owner", ref.owner, "--limit", "100", "--format", "json"]), "project fields");
-    const cliFields = listFromJson(fieldsParsed, ["fields", "items"]);
-    const graphqlFields = details.id
-      ? listFromJson(graphql(client,
-        "query($id: ID!) { node(id: $id) { ... on ProjectV2 { fields(first: 100) { nodes { ... on ProjectV2Field { id name dataType } ... on ProjectV2SingleSelectField { id name dataType options { id name } } } } } } }",
-        { id: details.id })?.node?.fields, ["nodes"])
-      : [];
-    const fields = cliFields.map((field) => ({
-      ...field,
-      ...(graphqlFields.find((candidate) => candidate.id === field.id) || {}),
-    }));
-    const itemArgs = ["project", "item-list", String(ref.number), "--owner", ref.owner, "--limit", "1000"];
-    for (const field of fields) if (field.id) itemArgs.push("--field-id", String(field.id));
-    itemArgs.push("--format", "json");
-    const itemsParsed = parseJson(run(client, itemArgs), "project items");
-    const items = listFromJson(itemsParsed, ["items", "projectItems"]);
+    const fields = projectFields(client, details.id);
+    const items = projectItems(client, details.id);
     const metadata = readMetadata(readmeOf(details));
     return { ref: { ...ref, id: projectId(details) || ref.id, number: projectNumber(details) || ref.number }, project: details, fields, items, metadata };
   }
@@ -236,8 +226,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
   }
 
   function projectRefFromCreated(output, owner) {
-    const parsed = parseJson(output, "project create");
-    const project = parsed?.project || parsed;
+    const project = output?.project || output;
     const number = projectNumber(project);
     if (!number) throw new BoardError("GitHub created a Project but did not return its number; rerun create to reconcile the setup placeholder.");
     return { owner, number, id: projectId(project) };
@@ -260,7 +249,8 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       if (latest.items.length !== 0) return false;
       const again = projectSnapshot(ref);
       if (again.items.length !== 0) return false;
-      run(client, ["project", "delete", String(ref.number), "--owner", ref.owner]);
+      if (!latest.ref.id) return false;
+      deleteProject(client, latest.ref.id);
       return true;
     } catch {
       return false;
@@ -288,16 +278,17 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       // Unknown visibility is treated as unsafe. The explicit edit below is
       // followed by a fresh read before any board content is written.
     }
+    const resolvedRef = latest.ref;
     let beforeEdit;
     try {
-      beforeEdit = readRemote(ref, { allowMissing: true });
+      beforeEdit = readRemote(resolvedRef, { allowMissing: true });
     } catch {
       privacyFailure(ref, created);
     }
     if (previous && desired && beforeEdit?.loaded?.board) mergeIndependentChanges(previous, desired, beforeEdit.loaded.board);
     try {
-      run(client, ["project", "edit", String(ref.number), "--owner", ref.owner, "--visibility", "PRIVATE"]);
-      latest = projectSnapshot(ref);
+      updateProject(client, resolvedRef, { public: false });
+      latest = projectSnapshot(resolvedRef);
     } catch {
       latest = null;
     }
@@ -353,12 +344,12 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       const started = saved.bootstrapStartedAt || new Date().toISOString();
       saveBootstrapState({ owner, boardId, repoUrl, bootstrapStartedAt: started });
       runProjectList(owner); // Re-read immediately before creating the placeholder.
-      const output = run(client, ["project", "create", "--owner", owner, "--title", GENERIC_PROJECT_TITLE, "--format", "json"]);
+      const output = createRemoteProject(client, owner, GENERIC_PROJECT_TITLE);
       ref = projectRefFromCreated(output, owner);
       created = true;
-      // Privacy is the very next gh command after placeholder creation.
+      // Privacy is the very next Project mutation after placeholder creation.
       try {
-        run(client, ["project", "edit", String(ref.number), "--owner", owner, "--visibility", "PRIVATE"]);
+        updateProject(client, ref, { public: false });
       } catch {
         const deleted = cleanupUnverifiedPlaceholder(ref);
         clearRecord();
@@ -481,7 +472,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     }
     const latest = projectSnapshot(ref);
     if (!latest.metadata || latest.metadata.boardId !== metadata.boardId) throw new BoardError("GitHub Project changed before removal; reload and retry.");
-    run(client, ["project", "delete", String(ref.number), "--owner", ref.owner]);
+    deleteProject(client, latest.ref.id);
     clearRecord();
     cachedRevision = null;
   }

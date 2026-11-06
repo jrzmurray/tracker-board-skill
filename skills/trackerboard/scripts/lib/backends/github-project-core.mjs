@@ -33,6 +33,8 @@ export function createGitHubClient(executable = "gh") {
           stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         });
       } catch (error) {
+        const stderr = String(error.stderr || "").toLowerCase();
+        if (stderr.includes("rate limit")) throw new BoardError("GitHub API rate limit was reached. Wait for the limit to reset, then retry.");
         const status = Number.isInteger(error.status) ? ` (exit ${error.status})` : "";
         throw new BoardError(`${commandLabel(args)} failed${status}. ${AUTH_RECOVERY}`);
       }
@@ -45,6 +47,9 @@ export function run(client, args, options) {
     return String(client.run(args, options) ?? "");
   } catch (error) {
     if (error instanceof BoardError) throw error;
+    if (String(error.stderr || "").toLowerCase().includes("rate limit")) {
+      throw new BoardError("GitHub API rate limit was reached. Wait for the limit to reset, then retry.");
+    }
     throw new BoardError(`${commandLabel(args)} failed. ${AUTH_RECOVERY}`);
   }
 }
@@ -423,18 +428,30 @@ export function graphql(client, query, variables) {
   return response?.data;
 }
 
-export function projectDetails(client, ref) {
-  const project = parseProjectView(run(client, ["project", "view", String(ref.number), "--owner", ref.owner, "--format", "json"]));
-  const id = projectId(project) || ref.id;
-  let details = project;
-  if (id) {
+export function projectItems(client, id) {
+  if (!id) throw new BoardError("GitHub Project did not return an ID required to read its items.");
+  const items = [];
+  let after = null;
+  do {
     const data = graphql(client,
-      "query($id: ID!) { node(id: $id) { ... on ProjectV2 { id number title public readme createdAt } } }",
-      { id });
-    const node = data?.node;
-    if (node) details = { ...project, ...node };
-  }
-  return { ...details, id, number: projectNumber(details) || ref.number };
+      `query($id: ID!, $after: String) { node(id: $id) { ... on ProjectV2 { items(first: 100, after: $after) {
+        nodes { id type content { __typename ... on DraftIssue { id title body } ... on Issue { id title body } ... on PullRequest { id title body } }
+          fieldValues(first: 100) { nodes { __typename
+            ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { id name } } }
+            ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { id name } } }
+            ... on ProjectV2ItemFieldSingleSelectValue { name optionId field { ... on ProjectV2SingleSelectField { id name } } }
+          } }
+        }
+        pageInfo { hasNextPage endCursor }
+      } } } }`,
+      { id, after });
+    const connection = data?.node?.items;
+    if (!connection || !Array.isArray(connection.nodes)) throw new BoardError("GitHub returned invalid Project items.");
+    items.push(...connection.nodes);
+    after = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+    if (connection.pageInfo?.hasNextPage && !after) throw new BoardError("GitHub Project item pagination returned no cursor.");
+  } while (after);
+  return items;
 }
 
 export function statusValue(field) {

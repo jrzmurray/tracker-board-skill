@@ -41,10 +41,12 @@ export class MockGitHub {
     privateFailure = false,
     failAfterDraftCreate = false,
     failAfterProjectCreate = false,
+    failAfterReadmeSave = false,
     failAfterItemDelete = false,
     failBeforeItemDelete = false,
     authScopes = ["repo", "project"],
     projectListFailure = false,
+    hideProjectItems = false,
   } = {}) {
     this.calls = [];
     this.projects = new Map();
@@ -54,10 +56,12 @@ export class MockGitHub {
     this.privateFailure = privateFailure;
     this.failAfterDraftCreate = failAfterDraftCreate;
     this.failAfterProjectCreate = failAfterProjectCreate;
+    this.failAfterReadmeSave = failAfterReadmeSave;
     this.failAfterItemDelete = failAfterItemDelete;
     this.failBeforeItemDelete = failBeforeItemDelete;
     this.authScopes = authScopes;
     this.projectListFailure = projectListFailure;
+    this.hideProjectItems = hideProjectItems;
   }
 
   run(args, options = {}) {
@@ -198,7 +202,21 @@ export class MockGitHub {
             if (input[key] !== undefined) project[key] = input[key];
           }
         }
+        if (input.readme !== undefined && this.failAfterReadmeSave) {
+          this.failAfterReadmeSave = false;
+          throw new Error("simulated lost README save response");
+        }
         return JSON.stringify({ data: { updateProjectV2: { projectV2: this.projectSummary(project) } } });
+      }
+      if (Array.isArray(payload.variables?.ids)) {
+        const nodes = payload.variables.ids.map((id) => {
+          for (const project of this.projects.values()) {
+            const item = project.items.find((candidate) => candidate.id === id);
+            if (item) return this.graphqlItem(item, project);
+          }
+          return null;
+        });
+        return JSON.stringify({ data: { nodes } });
       }
       const project = this.findProject(payload.variables.id);
       if (payload.query.includes("fields(first: 100)")) {
@@ -206,9 +224,10 @@ export class MockGitHub {
       }
       if (payload.query.includes("items(first: 100")) {
         const offset = Number(payload.variables.after) || 0;
-        const page = project.items.slice(offset, offset + 100).map((item) => this.graphqlItem(item, project));
+        const visible = this.hideProjectItems ? [] : project.items;
+        const page = visible.slice(offset, offset + 100).map((item) => this.graphqlItem(item, project));
         const next = offset + page.length;
-        const hasNextPage = next < project.items.length;
+        const hasNextPage = next < visible.length;
         return JSON.stringify({ data: { node: { items: {
           nodes: page,
           pageInfo: { hasNextPage, endCursor: hasNextPage ? String(next) : null },
@@ -230,7 +249,7 @@ export class MockGitHub {
       return JSON.stringify(field);
     }
     if (root === "project" && command === "item-list") {
-      return JSON.stringify(this.project(tail).items);
+      return JSON.stringify(this.hideProjectItems ? [] : this.project(tail).items);
     }
     if (root === "project" && command === "item-create") {
       const project = this.project(tail);
@@ -288,7 +307,13 @@ export class MockGitHub {
         if (!this.privateFailure) project.public = this.flag(tail, "--visibility") !== "PRIVATE";
       }
       if (tail.includes("--title")) project.title = this.flag(tail, "--title");
-      if (tail.includes("--readme")) project.readme = this.flag(tail, "--readme");
+      if (tail.includes("--readme")) {
+        project.readme = this.flag(tail, "--readme");
+        if (this.failAfterReadmeSave) {
+          this.failAfterReadmeSave = false;
+          throw new Error("simulated lost README save response");
+        }
+      }
       return JSON.stringify(this.projectSummary(project));
     }
     if (root === "project" && command === "delete") {
@@ -329,6 +354,7 @@ export class MockGitHub {
     return {
       id: item.id,
       type: item.type === "DraftIssue" ? "DRAFT_ISSUE" : item.type.toUpperCase(),
+      project: { id: project.id },
       content: item.content && {
         __typename: item.content.type,
         id: item.content.id,

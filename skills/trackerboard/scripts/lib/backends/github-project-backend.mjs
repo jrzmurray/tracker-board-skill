@@ -4,7 +4,10 @@ import { mergeBoards } from "../merge.mjs";
 import * as core from "./github-project-core.mjs";
 import * as api from "./github-project-api.mjs";
 import { createGitHubProjectFieldManager } from "./github-project-fields.mjs";
+import { projectItemsByIds } from "./github-project-items.mjs";
 import { createGitHubProjectSynchronizer } from "./github-project-sync.mjs";
+import { sanitizeRepositoryUrl } from "../backend-target.mjs";
+import { appendOperation, assertOperationMatch, findOperation } from "../operation-receipts.mjs";
 
 const {
   AUTH_RECOVERY, GENERIC_PROJECT_TITLE, MIN_GH_VERSION, PROJECT_FIELDS,
@@ -21,10 +24,17 @@ const {
 export function createGitHubProjectBackend(context, client = createGitHubClient(context?.config?.github?.executable || process.env.TRACKERBOARD_GH || "gh")) {
   let local = { ...(context?.local || {}) };
   let cachedRevision = null;
+  let cachedOperations = [];
   let ready = false;
   const cfg = context?.config?.github || {};
   const sourceUrl = context?.repoUrl || context?.config?.repoUrl || "";
   const parsedRepo = parseGitHubRepo(sourceUrl);
+
+  function safeBoard(input) {
+    const board = normalizeBoard(input);
+    if (board.repoUrl) board.repoUrl = sanitizeRepositoryUrl(board.repoUrl);
+    return board;
+  }
 
   function ensureReady() {
     if (ready) return;
@@ -86,6 +96,18 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const fields = projectFields(client, details.id);
     const items = projectItems(client, details.id);
     const metadata = readMetadata(readmeOf(details));
+    const visibleIds = new Set(items.map(itemId).filter(Boolean).map(String));
+    const mappedIds = Object.values(metadata?.phaseItems || {})
+      .map(String)
+      .filter((id) => id && !visibleIds.has(id));
+    for (const item of projectItemsByIds(client, mappedIds)) {
+      if (String(item.project?.id || "") !== String(details.id || "")) continue;
+      if (!isDraftItem(item)) throw new BoardError("Trackerboard metadata maps a phase to a non-draft GitHub Project item; refusing to treat a repository Issue or PR as a phase.");
+      if (!visibleIds.has(String(itemId(item)))) {
+        items.push(item);
+        visibleIds.add(String(itemId(item)));
+      }
+    }
     return { ref: { ...ref, id: projectId(details) || ref.id, number: projectNumber(details) || ref.number }, project: details, fields, items, metadata };
   }
 
@@ -237,7 +259,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
       ...(record()),
       owner,
       boardId,
-      repoUrl,
+      repoUrl: repoUrl ? sanitizeRepositoryUrl(repoUrl) : "",
       bootstrapStartedAt,
       ...(ref ? { projectNumber: ref.number, projectId: ref.id || undefined } : {}),
     });
@@ -375,10 +397,10 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
   });
   function create(boardInput) {
     ensureReady();
-    const board = normalizeBoard(boardInput);
+    const board = safeBoard(boardInput);
     const saved = record();
     if (saved.bootstrapComplete) throw new BoardError("GitHub Project already contains a completed Trackerboard board; use save instead of create.");
-    const boardId = saved.boardId || randomUUID();
+    const boardId = saved.boardId || context?.local?.boardId || randomUUID();
     // All size checks happen before project creation, field creation, or other
     // remote mutations. 128 bytes is a conservative bound for each opaque ID.
     const bodies = assertSizes(board, boardId, {});
@@ -400,7 +422,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     snapshot = ensureFields(project.ref, null, board);
     // Check exact encoded metadata size against the IDs already reconciled.
     assertSizes(board, project.boardId, snapshot?.loaded?.phaseItems || {});
-    syncBoard(project.ref, project.boardId, board, { starting: snapshot });
+    syncBoard(project.ref, project.boardId, board, { starting: snapshot, operations: [] });
     saveRecord({ ...record(), bootstrapComplete: true });
     return board;
   }
@@ -410,13 +432,15 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const ref = refFor();
     if (!ref) return null;
     const snapshot = readRemote(ref, { allowMissing: true });
+    if (snapshot.ref.id) saveRecord({ ...record(), owner: snapshot.ref.owner, projectNumber: snapshot.ref.number, projectId: snapshot.ref.id });
     cachedRevision = revisionToken(snapshot.loaded?.board, snapshot.metadata);
+    cachedOperations = snapshot.metadata?.operations || [];
     return snapshot.loaded?.board || null;
   }
 
-  function save(boardInput, { previous: previousInput, expectedRevision } = {}) {
+  function save(boardInput, { previous: previousInput, expectedRevision, operation } = {}) {
     ensureReady();
-    const desired = normalizeBoard(boardInput);
+    const desired = safeBoard(boardInput);
     const previous = previousInput ? normalizeBoard(previousInput) : null;
     const ref = refFor(desired);
     if (!ref) throw new BoardError("GitHub Project is not set up for this board; run create first.");
@@ -424,6 +448,16 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     if (!snapshot.metadata || !snapshot.loaded?.board) throw new BoardError("GitHub Project has no Trackerboard metadata; run create first.");
     if (context?.name && snapshot.metadata.name !== context.name) throw new BoardError(`GitHub Project is bound to Trackerboard board ${snapshot.metadata.name}.`);
     const observedRevision = revisionToken(snapshot.loaded.board, snapshot.metadata);
+    let operations = Array.isArray(snapshot.metadata.operations) ? [...snapshot.metadata.operations] : [];
+    if (operation !== undefined) {
+      const existing = assertOperationMatch(operations, operation);
+      if (existing) {
+        cachedRevision = observedRevision;
+        cachedOperations = operations;
+        return observedRevision;
+      }
+      operations = appendOperation(operations, operation);
+    }
     if (previous && expectedRevision != null && expectedRevision !== observedRevision) {
       // Field-level comparison below distinguishes harmless independent edits.
       assertNoConflicts(previous, desired, snapshot.loaded.board);
@@ -434,11 +468,12 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const boardId = snapshot.metadata.boardId;
     const wantedIds = new Set(desired.waves.flatMap((wave) => wave.phases.map((phase) => phase.id)));
     const pendingDelete = deletionManifest(snapshot, wantedIds, snapshot.loaded.phaseItems || {});
-    assertSizes(desired, boardId, snapshot.loaded.phaseItems, pendingDelete);
+    assertSizes(desired, boardId, snapshot.loaded.phaseItems, pendingDelete, operations);
     ensurePrivate(ref, { previous, desired });
     snapshot = ensureFields(ref, previous, desired);
-    assertSizes(desired, boardId, snapshot.loaded?.phaseItems || {}, pendingDelete);
-    const nextRevision = syncBoard(ref, boardId, desired, { previous, starting: snapshot });
+    assertSizes(desired, boardId, snapshot.loaded?.phaseItems || {}, pendingDelete, operations);
+    const nextRevision = syncBoard(ref, boardId, desired, { previous, starting: snapshot, operations });
+    cachedOperations = operations;
     saveRecord({ ...record(), bootstrapComplete: true });
     return nextRevision;
   }
@@ -447,12 +482,17 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     return cachedRevision;
   }
 
+  function getOperation(id) {
+    return findOperation(cachedOperations, id);
+  }
+
   function remove() {
     ensureReady();
     const ref = refFor();
     if (!ref) {
       clearRecord();
       cachedRevision = null;
+      cachedOperations = [];
       return;
     }
     const snapshot = readRemote(ref);
@@ -475,7 +515,8 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     deleteProject(client, latest.ref.id);
     clearRecord();
     cachedRevision = null;
+    cachedOperations = [];
   }
 
-  return { load, create, save, revision, remove };
+  return { load, create, save, revision, getOperation, remove };
 }

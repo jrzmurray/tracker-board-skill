@@ -206,7 +206,9 @@ trackerboard migrate --to json|sqlite|github [--dry-run]
 
 `backend` reports the resolved configuration and active backend; it does not switch storage. Configuration merges key-by-key from `~/.local/share/trackerboard/config.json`, `~/.local/share/trackerboard/repos/<bindingKey>.json`, and the board's `.local.json` override. `XDG_DATA_HOME` or `TRACKERBOARD_DATA_HOME` changes the first two paths; `TRACKERBOARD_HOME` changes board metadata paths. JSON remains the default.
 
-`migrate` first writes a mode-0600 recovery snapshot, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
+`migrate` first writes a mode-0600 recovery snapshot under `~/.trackerboard/recovery/`, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
+
+Recovery copies and merge-base files remain available for manual recovery but are not active boards; `boards` and the shared `serve` index omit them. Older recovery snapshots in `boards/` are identified by their stored board name, so legitimate names ending in a recovery-like suffix remain discoverable. Merge bases now live under `bases/`; old `boards/<name>.base.json` files are read and moved safely, and are removed only when their stored board name matches the owning board. This keeps names ending in `.base` distinct from another board's merge base.
 
 ### GitHub Projects backend
 
@@ -218,13 +220,15 @@ Each phase maps its title to the draft-item title and has custom fields for Trac
 
 GitHub Project writes use reread-and-reconcile best effort because the API does not provide a multi-item transaction or compare-and-swap token. Observed same-field conflicts are rejected, but a race after the last read remains best-effort last-write-wins. Bootstrap and retries reconcile by stable board, phase, and Project item IDs. Coordinate writes to a shared board and inspect it after concurrent changes. Phases are Project draft items only; Trackerboard does not create or close repository Issues, and an `--issue` field only references an existing Issue.
 
+When GitHub returns a new draft item's ID before its Project item listing reflects it, Trackerboard persists the ID in Project metadata and reads the item directly by ID. If the `gh project item-create` response is lost before that ID can be saved, inspect the private Project before retrying; a reported GitHub Projects forward-index inconsistency can leave an item retrievable by ID but absent from the Project's item list and views. See the [GitHub report](https://github.com/orgs/community/discussions/208677).
+
 ### Local editor and PR badges
 
 `trackerboard serve [--board NAME] [--port N]` serves an editable browser view over the active backend. It binds only to `127.0.0.1`; the printed URL contains a random per-run capability. Writes also require the matching bearer capability and same-origin request. The editor uses validated board operations rather than accepting a replacement board document. Local JSON and SQLite changes appear on the next two-second poll; GitHub Project state is cached for up to 60 seconds. You can open the printed URL in a browser panel beside the chat, but no Codex-specific integration is required.
 
 `trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is todo-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
 
-The current CLI starts one editor server for one selected board. The proposed design for sharing a single service across all boards is in [docs/shared-server-plan.md](docs/shared-server-plan.md); it is a plan, not implemented behavior.
+The CLI starts or reuses one local service for all discovered boards. Use `trackerboard serve --board NAME` to print a selected board's URL; without a selected board it still starts the shared service and prints the protected index URL. See [skills/trackerboard/AGENTS.md](skills/trackerboard/AGENTS.md) for commands and lifecycle details, and [docs/shared-server-plan.md](docs/shared-server-plan.md) for the design decisions and acceptance criteria.
 
 ## Data model
 
@@ -244,7 +248,8 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 | --- | --- |
 | `boards/<name>.json` | the board |
 | `boards/<name>.local.json` | this machine's bindings, backend override, artifact URL/version and local backend metadata |
-| `boards/<name>.base.json` | the published document as of the recorded db version (the merge base for `pull`) |
+| `bases/<name>.json` | the published document as of the recorded db version (the merge base for `pull`) |
+| `recovery/<name>-<timestamp>.json` | mode-0600 pre-migration recovery copies; not active boards |
 | `remote/<name>/` | where `refresh` has `ArtifactData get` save the published document |
 | `out/docs/<name>-<hash>.json` | the db document written on each change, one file per snapshot |
 | `out/<name>.page.html` | the publishable page |

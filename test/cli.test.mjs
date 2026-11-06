@@ -387,7 +387,7 @@ esac
   ], { ...env, ok: false });
   assert.equal(createWithIdentity.status, 1);
   assert.doesNotMatch(createWithIdentity.stderr, /needs a saved repository identity/);
-  assert.match(fs.readFileSync(ghLog, "utf8"), /project view 12 --owner acme/);
+  assert.match(fs.readFileSync(ghLog, "utf8"), /api graphql/);
 });
 
 test("migration selects its destination binding without switching sources before verification", () => {

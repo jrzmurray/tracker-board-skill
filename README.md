@@ -175,7 +175,7 @@ Publishing to a claude.ai artifact is done by an agent, not by the CLI. The comm
 | `check` | Compares that sha256 with the one recorded at the last push; reads no board data. `--overwrite` accepts replacing another writer's change. |
 | `pull` | Merges the published `state.json` (read with `read_file` only when the version moved). |
 
-Once a board is linked, every write also prints a `publish:` step (a `publish_files`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).
+Once a board is linked, every write by a Claude agent also prints a `publish:` step (a `publish_files`). Writes are never refused; the publish is, if anyone published since the recorded version. Other agents see `saved locally` and nothing else.
 
 Everything else (`create`, `bind`, `unbind`, `boards`, `remove`, `show`, `insert`, `update`, `delete`, `dep`, `log`, `import`, `github`, `refresh-prs`, `backend`, `migrate`, `serve`, `render`) works without Claude. An unlinked board has no refresh or publish steps; `render` writes a static HTML snapshot you can open anywhere. The artifact integration is optional. Migration to SQLite or GitHub Projects leaves the original artifact untouched and detached; it becomes a read-only snapshot and its refresh/pull/push workflow is no longer available.
 

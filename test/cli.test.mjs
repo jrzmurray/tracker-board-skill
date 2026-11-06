@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -105,7 +106,7 @@ test("push prints a publish_files call pinned to the recorded version", () => {
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   let out = run(["push"]).stdout;
   let call = publishState(out);
-  assert.equal(call.base_version, "<version from get_artifact>");
+  assert.equal(call.base_version, "<version from list_files>");
   assert.equal(call.slug, "abc123");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].id, "P1");
   assert.ok(call.file_path.startsWith(home));
@@ -200,7 +201,7 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   publishRemote((d) => { d.waves[0].phases[0].status = "done"; d.log.unshift({ at: "2030-01-01T00:00:00.000Z", text: "P1 merged" }); });
   run(["update", "--phase", "P2", "--owner", "me"]);
   const refreshOut = run(["refresh"]).stdout;
-  assert.deepEqual(JSON.parse(refreshOut.match(/get_artifact (\{.*\})/)[1]), { slug: "abc123" });
+  assert.deepEqual(JSON.parse(refreshOut.match(/list_files (\{.*\})/)[1]), { slug: "abc123" });
 
   let out = run(["pull", "--version", "v2"]).stdout;
   assert.match(out, /pulled b artifact version v2 \(was v1\)/);
@@ -224,6 +225,30 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   assert.match(run(["show"]).stdout, /@other/);
 });
 
+test("check compares the published hash and reads nothing", () => {
+  const { run } = sandbox();
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  const c = publishState(run(["push"]).stdout);
+  run(["synced", "--version", "v1", "--doc", c.file_path]);
+  const sha = createHash("sha256").update(fs.readFileSync(c.file_path)).digest("hex");
+  assert.match(run(["show"]).stdout, /last pushed 0m ago/);
+
+  // Same hash, new version (e.g. a page republish): current, no pull.
+  assert.match(run(["check", "--version", "v2", "--sha", sha]).stdout, /is current \(version v2\)/);
+  // Another writer changed state.json: stop without reading it.
+  const other = "f".repeat(64);
+  const r = run(["check", "--version", "v3", "--sha", other], { ok: false });
+  assert.match(r.stderr, /differs from the last push/);
+  assert.match(r.stderr, /--overwrite/);
+  // Accepting the overwrite pins the next push to the live version.
+  const o = run(["check", "--version", "v3", "--sha", other, "--overwrite"]).stdout;
+  assert.match(o, /will overwrite/);
+  assert.equal(publishState(o).base_version, "v3");
+  run(["check", "--version", "v3", "--sha", "nope"], { ok: false });
+});
+
 test("writes to a linked board need a recent refresh", () => {
   const { run } = sandbox();
   run(["create", "b"]);
@@ -231,7 +256,7 @@ test("writes to a linked board need a recent refresh", () => {
   run(["synced", "--version", "v1"]);
   const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
   const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
-  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: get_artifact \{"slug":/);
+  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: list_files \{"slug":/);
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
   run(["insert", "--phase", "P1"]);
 });

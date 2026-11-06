@@ -46,7 +46,7 @@ For every backend, read with `trackerboard show` before work and make changes th
 
 For a board linked to a Claude artifact, other agents may publish at any time. The CLI tracks the published version and won't let you write from a stale copy. Run `trackerboard refresh` before reading or writing that linked board.
 
-**Refresh a linked Claude artifact:** `trackerboard refresh` prints a `get_artifact` call (a few lines, no board data). Make it, then run the printed `trackerboard pull --version <version from the result>`. If the version has not moved, `pull` just records the check. If it has, `pull` stops and prints a `read_file` call for `state.json`: make it, copy the saved file to the path it names (or pass `pull --from FILE`), and rerun the pull.
+**Refresh a linked Claude artifact:** `trackerboard refresh` prints a `list_files` call (a few lines, no board data). Make it, then run the printed `trackerboard check --version V --sha H` using the version and the `state.json` sha256 from the result. `check` only compares the hash with the last push; it reads nothing. If the hash differs, another writer changed the board: stop and ask the user. They choose `check ... --overwrite` (your board replaces theirs on the next push) or a deliberate merge (`read_file`, copy to the printed path, `trackerboard pull --version V`; this puts the whole board in context). Don't run `show` or read `state.json` unless asked.
 - If nothing changed, `pull` does nothing.
 - Otherwise it merges the published board with unpublished local changes. Conflicts on the same field stop the pull; ask which value to keep, then rerun with `--theirs` or `--ours`.
 
@@ -88,8 +88,8 @@ The board is published as a file, `state.json`, next to the page. The page holds
 
 Make that call with `mcp__claude-artifacts__publish_files` (load it with ToolSearch if it is deferred), then run the `synced` line with the version id from the result. The call changes only `state.json`; the page and any other files are kept. Batch several writes, then publish once: only the last write's steps matter.
 
-- **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `get_artifact` call, then `pull` (reading `state.json` when it asks). That merges your changes onto theirs and prints a new publish step; make that call. Nothing needs to be redone.
-- **No recorded version:** the step prints `<version from get_artifact>`; make that call and use its version as `base_version`.
+- **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `list_files` call, then `check`. If the board itself changed, `check` stops and offers `--overwrite` or a deliberate `pull` merge; otherwise it prints a new publish step. Make that call.
+- **No recorded version:** the step prints `<version from list_files>`; make that call and use its version as `base_version`.
 
 Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 

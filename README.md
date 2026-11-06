@@ -114,13 +114,14 @@ trackerboard <command> [options]
     --log "<text>"                 Also record the change in "Recent changes" (any write).
     @file                          As a field value: read it from a file; - reads stdin.
 
-  Publish (Claude-specific: these steps print Claude `publish_files` / `get_artifact` / `read_file` tool calls)
+  Publish (Claude-specific: these steps print Claude `publish_files` / `list_files` / `read_file` tool calls)
     page                           Write the publishable page and print the first-publish steps.
     link --url URL                 Record the board's artifact URL.
     push                           Write the state.json document and print the publish_files call.
     synced --version N             Record the artifact version a publish_files returned.
       --doc FILE                     The document that was written.
-    refresh                        Print the get_artifact that checks the published board.
+    refresh                        Print the list_files call that checks the published board.
+    check --version V --sha H [--overwrite]  Compare the live state.json hash with the last push.
     pull --version N               Merge the fetched document into the local board (no-op if current).
       --from FILE                    Read the fetched document from FILE.
       --theirs                       On conflict, keep the artifact's value.
@@ -161,7 +162,7 @@ These commands are available in the CLI installed from this repository. Older st
 
 The core CLI does not contact Claude or claude.ai. The JSON backend reads and writes local files; the existing `trackerboard github` overlay uses the GitHub CLI (`gh`). Only the commands below need an agent that can call Claude's artifact tools.
 
-Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `publish_files`, `get_artifact` or `read_file` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
+Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `publish_files`, `list_files` or `read_file` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
 
 | Command | Claude-specific part |
 | --- | --- |
@@ -169,7 +170,8 @@ Publishing to a claude.ai artifact is done by an agent, not by the CLI. The comm
 | `link --url URL` | Records the claude.ai artifact URL for the board. |
 | `push` | Prints the `publish_files` call that uploads the board as `state.json` (from disk, so no tokens for the document). |
 | `synced` | Records the artifact version that `publish_files` returned. |
-| `refresh` | Prints the `get_artifact` call that reports the live version. |
+| `refresh` | Prints the `list_files` call that reports the live version and the `state.json` sha256. |
+| `check` | Compares that sha256 with the one recorded at the last push; reads no board data. `--overwrite` accepts replacing another writer's change. |
 | `pull` | Merges the published `state.json` (read with `read_file` only when the version moved). |
 
 Once a board is linked, every write also prints a `publish:` step (a `publish_files`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).

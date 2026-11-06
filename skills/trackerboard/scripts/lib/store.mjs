@@ -301,7 +301,7 @@ export function createBoard(name, opts, { binding = null } = {}) {
   const board = newBoard(name, opts);
   if (opts.repoUrl) board.repoUrl = sanitizeRepositoryUrl(opts.repoUrl);
   if (!resumeGithubBootstrap) {
-    const local = { bindings: [], artifactUrl: "", artifactVersion: null, revision: 0, backendOverride: {} };
+    const local = { bindings: [], artifactUrl: "", artifactVersion: null, stateSha: null, pushedAt: null, revision: 0, backendOverride: {} };
     local.boardId = randomUUID();
     if (binding) {
       local.bindings.push(structuredClone(binding));
@@ -418,7 +418,7 @@ export function removeBoard(name) {
 }
 
 export function loadLocal(name) {
-  return readJson(localPath(checkName(name)), { bindings: [], artifactUrl: "", artifactVersion: null, revision: 0, backendOverride: {} });
+  return readJson(localPath(checkName(name)), { bindings: [], artifactUrl: "", artifactVersion: null, stateSha: null, pushedAt: null, revision: 0, backendOverride: {} });
 }
 
 export function saveLocal(name, local) {

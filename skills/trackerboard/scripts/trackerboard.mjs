@@ -49,12 +49,13 @@ Phase fields
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
-Publish (Claude-specific: prints claude-artifacts tool calls: publish_files, get_artifact, read_file; the CLI never contacts Claude)
+Publish (Claude-specific: prints claude-artifacts tool calls: publish_files, list_files, read_file; the CLI never contacts Claude)
   page                    Write the publishable page and print the first-publish steps.
   link --url URL          Record the artifact URL for this board.
   push                    Write the state.json document and print the publish_files call.
   synced --version N [--doc FILE]  Record the artifact version a publish_files returned.
-  refresh                 Print the get_artifact that checks the published board.
+  refresh                 Print the list_files call that checks the published board.
+  check --version V --sha H [--overwrite]  Compare the live state.json hash with the last push (reads nothing).
   pull --version N [--from FILE] [--theirs | --ours]
                           Merge the fetched document into the local board
                           (no-op when N is the recorded version).
@@ -86,7 +87,7 @@ Backend and local editor
 
 // ---------- args ----------
 
-const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
+const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "overwrite", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -362,7 +363,7 @@ async function main(argv) {
 
   const boardScoped = new Set([
     "bind", "unbind", "create", "remove", "insert", "update", "delete", "rm", "dep", "log",
-    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull",
+    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull", "check",
   ]);
   let lockName = null;
   if (boardScoped.has(cmd)) {

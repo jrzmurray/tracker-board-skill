@@ -70,7 +70,7 @@ export function createDisplayHelpers({ out, staleNote }) {
 
     const local = S.loadLocal(name);
     out(`${board.name}: ${board.title}`);
-    out(`artifact: ${local.artifactUrl || "(none)"}  db version: ${local.dbVersion ?? "(unknown)"}`);
+    out(`artifact: ${local.artifactUrl || "(none)"}  version: ${local.artifactVersion ?? "(unknown)"}`);
     const line = (phase) => `${phase.id.padEnd(10)} ${phase.status.padEnd(8)} ${short(phase.title, 34).padEnd(34)} ${phase.deps.length ? "← " + phase.deps.join(",") : ""}${phase.owner ? `  @${phase.owner}` : ""}`.trimEnd();
     for (const wave of board.waves) {
       const mine = rows.filter((row) => row.wave === wave).map((row) => row.phase);

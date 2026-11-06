@@ -91,35 +91,33 @@ test("delete accepts a positional phase; update rejects unknown flags", () => {
   assert.match(r.stderr, /unexpected option\(s\): --colour/);
 });
 
-// Parses the printed `db_write` step into { slug, path, if_version, file_path }.
-function dbWrite(out) {
-  const call = JSON.parse(out.match(/db_write (\{.*\})/)[1]);
-  const [op] = call.ops;
-  assert.equal(op.op, "set");
-  return { slug: call.slug, path: op.path, if_version: op.ifVersion, file_path: out.match(/data = the contents of (\S+\.json)/)[1] };
+// Parses the printed `publish_files` step into { slug, base_version, file_path }.
+function publishState(out) {
+  const call = JSON.parse(out.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(call.files.map((f) => f.as), ["state.json"]);
+  return { slug: call.slug, base_version: call.base_version, file_path: call.files[0].path };
 }
 
-test("push prints a db_write call pinned to the recorded version", () => {
+test("push prints a publish_files call pinned to the recorded version", () => {
   const { home, run } = sandbox();
   run(["create", "b"]);
   run(["insert", "--phase", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   let out = run(["push"]).stdout;
-  let call = dbWrite(out);
-  assert.equal(call.if_version, undefined);
+  let call = publishState(out);
+  assert.equal(call.base_version, "<version from get_artifact>");
   assert.equal(call.slug, "abc123");
-  assert.equal(call.path, "board/state");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].id, "P1");
   assert.ok(call.file_path.startsWith(home));
 
-  run(["synced", "--version", "7"]);
+  run(["synced", "--version", "v7"]);
   out = run(["update", "--phase", "P1", "--status", "done"]).stdout;
-  call = dbWrite(out);
-  assert.equal(call.if_version, 7);
+  call = publishState(out);
+  assert.equal(call.base_version, "v7");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].status, "done");
 
   out = run(["insert", "--phase", "P2", "--deps", "P1"]).stdout;
-  call = dbWrite(out);
+  call = publishState(out);
   const doc = JSON.parse(fs.readFileSync(call.file_path, "utf8"));
   assert.equal(doc.layout.engine, "elk-layered");
   assert.deepEqual(doc.layout.edges.map((e) => [e.from, e.to]), [["P1", "P2"]]);
@@ -138,7 +136,14 @@ test("page and render embed the board safely", () => {
   const md = html.match(/<script id="tb-md">(.*?)<\/script>/s)[1];
   assert.match(md, /markdownit/);
   assert.doesNotMatch(md, /<\/script|sourceMappingURL/i);
-  assert.match(run(["page"]).stdout, /declare_capabilities .*\{"db"/);
+  // The published page carries no board data: state.json is published beside it.
+  const page = run(["page"]).stdout;
+  const first = JSON.parse(page.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(first.files.map((f) => f.as), ["index.html", "state.json"]);
+  const published = fs.readFileSync(first.files[0].path, "utf8");
+  assert.match(published, /<script type="application\/json" id="tb-data">null<\/script>/);
+  assert.doesNotMatch(published, /"phases"/);
+  assert.equal(JSON.parse(fs.readFileSync(first.files[1].path, "utf8")).waves[0].phases[0].title, "</script>");
 });
 
 test("field values can come from a file", () => {
@@ -176,9 +181,9 @@ test("owner is a phase field: set, shown, cleared", () => {
 
 test("refresh/pull merges a concurrent publish with unpublished local changes", () => {
   const { home, run } = sandbox();
-  const call = dbWrite;
+  const call = publishState;
   const publishRemote = (mutate) => {
-    const file = path.join(home, "remote", "b", "board", "state.json");
+    const file = path.join(home, "remote", "b", "state.json");
     const doc = JSON.parse(fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"));
     mutate(doc);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -189,31 +194,33 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   run(["insert", "--phase", "P2", "--deps", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
   let c = call(run(["push"]).stdout);
-  run(["synced", "--version", "1", "--doc", c.file_path]);
+  run(["synced", "--version", "v1", "--doc", c.file_path]);
 
   // Another agent publishes v2 (P1 done) while this one sets P2's owner.
   publishRemote((d) => { d.waves[0].phases[0].status = "done"; d.log.unshift({ at: "2030-01-01T00:00:00.000Z", text: "P1 merged" }); });
   run(["update", "--phase", "P2", "--owner", "me"]);
   const refreshOut = run(["refresh"]).stdout;
-  c = JSON.parse(refreshOut.match(/db_get (\{.*\})/)[1]);
-  assert.deepEqual(c, { slug: "abc123", path: "board/state" });
-  assert.ok(refreshOut.includes(path.join(home, "remote", "b", "board", "state.json")));
+  assert.deepEqual(JSON.parse(refreshOut.match(/get_artifact (\{.*\})/)[1]), { slug: "abc123" });
 
-  let out = run(["pull", "--version", "2"]).stdout;
-  assert.match(out, /pulled b db version 2 \(was 1\)/);
-  assert.equal(call(out).if_version, 2);
+  let out = run(["pull", "--version", "v2"]).stdout;
+  assert.match(out, /pulled b artifact version v2 \(was v1\)/);
+  assert.equal(call(out).base_version, "v2");
+  assert.equal(fs.existsSync(path.join(home, "remote", "b", "state.json")), false);
   let show = run(["show"]).stdout;
   assert.match(show, /P1 +done/);
   assert.match(show, /P2 +todo .*@me/);
-  assert.match(run(["pull", "--version", "2"]).stdout, /current at db version 2/);
+  assert.match(run(["pull", "--version", "v2"]).stdout, /current at artifact version v2/);
+  // A moved version with no downloaded document says how to read it.
+  const unread = run(["pull", "--version", "v9"], { ok: false });
+  assert.match(unread.stderr, /read_file \{"slug":"abc123","paths":\["state.json"\]\}/);
 
   // Both sides change the same field: conflict until a side is chosen.
-  run(["synced", "--version", "3"]);
+  run(["synced", "--version", "v3"]);
   publishRemote((d) => { d.waves[0].phases[1].owner = "other"; });
   run(["update", "--phase", "P2", "--owner", "mine"]);
-  const r = run(["pull", "--version", "4"], { ok: false });
+  const r = run(["pull", "--version", "v4"], { ok: false });
   assert.match(r.stderr, /conflicts with unpublished changes here:\n  phase P2 owner/);
-  run(["pull", "--version", "4", "--theirs"]);
+  run(["pull", "--version", "v4", "--theirs"]);
   assert.match(run(["show"]).stdout, /@other/);
 });
 
@@ -221,10 +228,10 @@ test("writes to a linked board need a recent refresh", () => {
   const { run } = sandbox();
   run(["create", "b"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
-  run(["synced", "--version", "1"]);
+  run(["synced", "--version", "v1"]);
   const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
   const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
-  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: db_get \{"slug":/);
+  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: get_artifact \{"slug":/);
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
   run(["insert", "--phase", "P1"]);
 });
@@ -310,7 +317,7 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   const initialBoardId = JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId;
   state.run(["insert", "--phase", "P1", "--title", "before migration"]);
   state.run(["link", "--url", "https://claude.ai/artifact/abc123"]);
-  state.run(["synced", "--version", "1"]);
+  state.run(["synced", "--version", "v1"]);
 
   fs.mkdirSync(backendHome, { recursive: true });
   fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({ backend: "github" }));

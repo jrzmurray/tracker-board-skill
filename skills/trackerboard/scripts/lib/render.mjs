@@ -31,7 +31,10 @@ function markdownItSource() {
   return markdownIt;
 }
 
-export function renderPage(board) {
+// `embed: false` is the published page: it holds no board data and loads the
+// separately published state.json instead, so there is one copy of the data.
+// The embedded form is for the local static render, which has no other source.
+export function renderPage(board, { embed = true } = {}) {
   let html = fs.readFileSync(TEMPLATE, "utf8");
   const mdSlot = '<script id="tb-md"></script>';
   if (!html.includes(mdSlot)) throw new Error("page template is missing the tb-md slot");
@@ -39,7 +42,7 @@ export function renderPage(board) {
   html = html.replace("<title>Tracker Board</title>", `<title>${escapeHtml(board.title || board.name)}</title>`);
   const slot = '<script type="application/json" id="tb-data">null</script>';
   if (!html.includes(slot)) throw new Error("page template is missing the tb-data slot");
-  return html.replace(slot, () => `<script type="application/json" id="tb-data">${scriptJson(board)}</script>`);
+  return embed ? html.replace(slot, () => `<script type="application/json" id="tb-data">${scriptJson(board)}</script>`) : html;
 }
 
 // A standalone document for local preview; the artifact skeleton supplies
@@ -61,8 +64,6 @@ export async function docBody(board, { prStates } = {}) {
   return { ...board, layout, ...(prStates ? { prStates } : {}) };
 }
 
-export const DOC_COLLECTION = "board";
-export const DOC_ID = "state";
-export const DOC_LIMIT = 240 * 1024;
-
-export const CAPABILITIES = { db: { rules: [{ path: "", read: "view", write: "admin" }] } };
+// The board document is published as this file next to the page.
+export const DOC_FILE = "state.json";
+export const DOC_LIMIT = 8 * 1024 * 1024;

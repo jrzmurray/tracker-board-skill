@@ -4,26 +4,42 @@ import { createHash } from "node:crypto";
 import * as B from "../lib/board.mjs";
 import * as S from "../lib/store.mjs";
 import { content, mergeBoards, sameContent } from "../lib/merge.mjs";
-import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage } from "../lib/render.mjs";
+import { DOC_FILE, DOC_LIMIT, docBody, renderPage } from "../lib/render.mjs";
 
 const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
 
 // The artifact slug is the last path segment of its claude.ai URL.
 const slugOf = (url) => String(url).replace(/[?#].*$/, "").replace(/\/+$/, "").split("/").pop();
-const docPath = `${DOC_COLLECTION}/${DOC_ID}`;
 
 export function createArtifactCommands({ boardName, out }) {
-  const linked = (local) => !local.artifactDetached && !!local.artifactUrl && local.dbVersion != null;
+  const linked = (local) => !local.artifactDetached && !!local.artifactUrl && local.artifactVersion != null;
   const checkedAgo = (local) => local.checkedAt ? (Date.now() - Date.parse(local.checkedAt)) / 1000 : Infinity;
   const age = (seconds) => seconds === Infinity ? "never" : seconds < 90 ? `${Math.round(seconds)}s ago` : seconds < 5400 ? `${Math.round(seconds / 60)}m ago` : `${Math.round(seconds / 3600)}h ago`;
 
+  const remoteFile = (name) => path.join(S.remoteDir(name), DOC_FILE);
+
+  // get_artifact is a few lines; the document itself is only read (read_file)
+  // when the version has moved, which `pull` says.
   function refreshLines(name, local) {
-    const call = { slug: slugOf(local.artifactUrl), path: docPath };
-    const saveTo = path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
     return [
-      `refresh: db_get ${JSON.stringify(call)}`,
-      `then:    save the document's JSON (the data, not the summary) to ${saveTo}`,
+      `refresh: get_artifact ${JSON.stringify({ slug: slugOf(local.artifactUrl) })}`,
       `then:    trackerboard pull --board ${name} --version <version from the result>`,
+    ];
+  }
+
+  function readRemote(name, from) {
+    const remote = JSON.parse(fs.readFileSync(from, "utf8"));
+    delete remote.layout; // derived; recomputed on every push
+    delete remote.prStates; // derived presentation data, never canonical board state
+    if (remote.name !== name) throw new B.BoardError(`document is board "${remote.name}", not "${name}"`);
+    B.validate(remote);
+    return remote;
+  }
+
+  function readFileLines(name, local) {
+    return [
+      `read:    read_file ${JSON.stringify({ slug: slugOf(local.artifactUrl), paths: [DOC_FILE] })}`,
+      `then:    copy the saved file to ${remoteFile(name)} and rerun this pull`,
     ];
   }
 
@@ -54,7 +70,7 @@ export function createArtifactCommands({ boardName, out }) {
   async function writeDoc(board, prStates) {
     const body = JSON.stringify(await docBody(board, { prStates }));
     if (Buffer.byteLength(body) > DOC_LIMIT) {
-      throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte db limit; trim long fields or the log`);
+      throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte limit; trim long fields or the log`);
     }
     const dir = path.join(S.outDir(), "docs");
     const file = path.join(dir, `${board.name}-${createHash("sha256").update(body).digest("hex").slice(0, 12)}.json`);
@@ -72,10 +88,11 @@ export function createArtifactCommands({ boardName, out }) {
       out(`publish: (no artifact linked; \`trackerboard page\` publishes one)`);
       return;
     }
-    const op = { op: "set", path: docPath };
-    if (local.dbVersion != null) op.ifVersion = local.dbVersion;
-    out(`publish: db_write ${JSON.stringify({ slug: slugOf(local.artifactUrl), ops: [op] })}`);
-    out(`         data = the contents of ${file} (db_write takes the document inline; read the file and pass its JSON)`);
+    // publish_files sends file bytes without passing them through the model.
+    // base_version makes it a compare-and-swap: it is refused if anyone
+    // published since the recorded version.
+    const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion ?? "<version from get_artifact>", files: [{ as: DOC_FILE, path: file }] };
+    out(`publish: publish_files ${JSON.stringify(call)}`);
     out(`then:    trackerboard synced --board ${board.name} --version <version from the result> --doc ${file}`);
   }
 
@@ -105,19 +122,24 @@ export function createArtifactCommands({ boardName, out }) {
       const name = boardName(opts);
       assertArtifactAttached(name);
       const board = S.loadBoard(name);
+      const prStates = cachedPrStates(name);
       const file = path.join(S.outDir(), `${name}.page.html`);
       fs.mkdirSync(S.outDir(), { recursive: true });
-      fs.writeFileSync(file, renderPage(await docBody(board, { prStates: cachedPrStates(name) })));
+      // The page carries no board data; state.json is published beside it.
+      fs.writeFileSync(file, renderPage(board, { embed: false }));
+      const doc = await writeDoc(board, prStates);
       const local = S.loadLocal(name);
-      out(`ok: wrote ${file}`);
+      out(`ok: wrote ${file} and ${doc}`);
       if (local.artifactUrl) {
-        out(`publish: publish_files ${JSON.stringify({ slug: slugOf(local.artifactUrl), base_version: "<version from get_artifact>", files: [{ as: "index.html", path: file }] })}`);
+        const call = { slug: slugOf(local.artifactUrl), base_version: local.artifactVersion ?? "<version from get_artifact>", files: [{ as: "index.html", path: file }] };
+        out(`publish: publish_files ${JSON.stringify(call)}`);
         out("(only needed when the page template changed; data updates go through push)");
+        out(`then:    trackerboard synced --board ${name} --version <version from the result> --doc ${doc}   (only if you also published ${DOC_FILE})`);
         return;
       }
-      out(`publish: publish_files ${JSON.stringify({ title: board.title, icon: "checklist", files: [{ as: "index.html", path: file }] })}`);
-      out(`then:    declare_capabilities for the new artifact: ${JSON.stringify(CAPABILITIES)}   (see describe_capabilities)`);
-      out(`then:    trackerboard link --board ${name} --url <artifact url>   and   trackerboard push --board ${name}`);
+      const call = { title: board.title, icon: "checklist", files: [{ as: "index.html", path: file }, { as: DOC_FILE, path: doc }] };
+      out(`publish: publish_files ${JSON.stringify(call)}`);
+      out(`then:    trackerboard link --board ${name} --url <artifact url>   and   trackerboard synced --board ${name} --version <version from the result> --doc ${doc}`);
     },
 
     link({ opts }) {
@@ -125,7 +147,7 @@ export function createArtifactCommands({ boardName, out }) {
       assertArtifactAttached(name);
       if (!opts.url || !/^https:\/\/claude\.ai\/(code\/)?artifact\//.test(opts.url)) throw new B.BoardError("link needs --url https://claude.ai/artifact/...");
       const local = S.loadLocal(name);
-      if (local.artifactUrl !== opts.url) { local.dbVersion = null; local.checkedAt = null; S.dropBase(name); }
+      if (local.artifactUrl !== opts.url) { local.artifactVersion = null; local.checkedAt = null; S.dropBase(name); }
       local.artifactUrl = opts.url;
       S.saveLocal(name, local);
       out(`ok: ${name} -> ${opts.url}`);
@@ -140,8 +162,8 @@ export function createArtifactCommands({ boardName, out }) {
     synced({ opts }) {
       const name = boardName(opts);
       assertArtifactAttached(name);
-      const version = Number(opts.version);
-      if (!Number.isInteger(version) || version < 1) throw new B.BoardError("synced needs --version <positive integer>");
+      const version = String(opts.version ?? "").trim();
+      if (!version || version === "true") throw new B.BoardError("synced needs --version <version id from the publish_files result>");
       // The published document is now the merge base: the snapshot that was
       // sent (--doc), or the local board if it was not named.
       const sent = opts.doc ? JSON.parse(fs.readFileSync(opts.doc, "utf8")) : S.loadBoard(name);
@@ -150,11 +172,11 @@ export function createArtifactCommands({ boardName, out }) {
       delete sent.prStates;
       S.saveBase(name, sent);
       const local = S.loadLocal(name);
-      local.dbVersion = version;
+      local.artifactVersion = version;
       local.checkedAt = new Date().toISOString();
       S.saveLocal(name, local);
       pruneDocs(name, opts.doc);
-      out(`ok: ${name} db version ${version}`);
+      out(`ok: ${name} artifact version ${version}`);
     },
 
     refresh({ opts }) {
@@ -171,47 +193,48 @@ export function createArtifactCommands({ boardName, out }) {
     async pull({ opts }) {
       const name = boardName(opts);
       assertArtifactAttached(name);
-      const version = Number(opts.version);
-      if (!Number.isInteger(version) || version < 1) throw new B.BoardError("pull needs --version <version from the db_get/db_write result>");
-      const from = opts.from || path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
-      const remote = JSON.parse(fs.readFileSync(from, "utf8"));
-      delete remote.layout; // derived; recomputed on every push
-      delete remote.prStates; // derived presentation data, never canonical board state
-      if (remote.name !== name) throw new B.BoardError(`document is board "${remote.name}", not "${name}"`);
-      B.validate(remote);
+      const version = String(opts.version ?? "").trim();
+      if (!version || version === "true") throw new B.BoardError("pull needs --version <version id from the get_artifact result>");
       const local = S.loadLocal(name);
+      const from = opts.from || remoteFile(name);
+      // Version ids are opaque, so the only comparison is "unchanged". When
+      // it has moved, the published document is needed.
+      if (version !== local.artifactVersion && !fs.existsSync(from)) {
+        throw new B.BoardError(`artifact version ${version} is not the recorded ${local.artifactVersion ?? "(none)"}; read the published document first:\n${readFileLines(name, local).join("\n")}`);
+      }
       const board = S.loadBoard(name);
       const base = S.loadBase(name);
       const now = new Date().toISOString();
 
-      if (local.dbVersion != null && version < local.dbVersion) {
-        return out(`ok: version ${version} is older than the recorded ${local.dbVersion}; nothing changed`);
-      }
-      if (version === local.dbVersion) {
-        if (!base) S.saveBase(name, remote);
+      if (version === local.artifactVersion) {
+        if (!base && fs.existsSync(from)) S.saveBase(name, readRemote(name, from));
         S.saveLocal(name, { ...local, checkedAt: now });
-        out(`ok: ${name} is current at db version ${version}`);
-        if (!sameContent(board, base || remote)) {
+        fs.rmSync(remoteFile(name), { force: true });
+        out(`ok: ${name} is current at artifact version ${version}`);
+        const saved = S.loadBase(name);
+        if (!saved || !sameContent(board, saved)) {
           out("local changes are not published yet:");
           await pushInstruction(board);
         }
         return;
       }
 
+      const remote = readRemote(name, from);
       // Without a recorded base, assume nothing local is unpublished.
       const prefer = opts.theirs ? "remote" : opts.ours ? "local" : null;
       const { board: merged, conflicts, notes } = !base || sameContent(board, base)
         ? { board: remote, conflicts: [], notes: [] }
         : mergeBoards(content(base), content(board), content(remote), { prefer });
       if (conflicts.length) {
-        throw new B.BoardError(`db version ${version} conflicts with unpublished changes here:\n  ${conflicts.join("\n  ")}\nRerun with --theirs (keep the artifact's) or --ours (keep these), or ask the user which.`);
+        throw new B.BoardError(`artifact version ${version} conflicts with unpublished changes here:\n  ${conflicts.join("\n  ")}\nRerun with --theirs (keep the artifact's) or --ours (keep these), or ask the user which.`);
       }
       if (!base && !sameContent(board, remote)) out("note: no merge base was recorded, so the local board was replaced by the artifact's");
       B.validate(merged);
       S.saveBoard(merged);
       S.saveBase(name, remote);
-      S.saveLocal(name, { ...local, dbVersion: version, checkedAt: now });
-      out(`ok: pulled ${name} db version ${version}${local.dbVersion != null ? ` (was ${local.dbVersion})` : ""}`);
+      S.saveLocal(name, { ...local, artifactVersion: version, checkedAt: now });
+      fs.rmSync(remoteFile(name), { force: true }); // never reuse a stale copy for a later pull
+      out(`ok: pulled ${name} artifact version ${version}${local.artifactVersion != null ? ` (was ${local.artifactVersion})` : ""}`);
       for (const note of notes) out(`note: ${note}`);
       if (!sameContent(merged, remote)) {
         out("merged with unpublished changes here; publish them:");

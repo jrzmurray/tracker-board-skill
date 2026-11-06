@@ -46,7 +46,7 @@ For every backend, read with `trackerboard show` before work and make changes th
 
 For a board linked to a Claude artifact, other agents may publish at any time. The CLI tracks the published version and won't let you write from a stale copy. Run `trackerboard refresh` before reading or writing that linked board.
 
-**Refresh a linked Claude artifact:** `trackerboard refresh` prints a `db_get` call. Make it, save the document's JSON to the file the CLI names (or pass `pull --from FILE`), then run the printed `trackerboard pull --version <version from the result>`.
+**Refresh a linked Claude artifact:** `trackerboard refresh` prints a `get_artifact` call (a few lines, no board data). Make it, then run the printed `trackerboard pull --version <version from the result>`. If the version has not moved, `pull` just records the check. If it has, `pull` stops and prints a `read_file` call for `state.json`: make it, copy the saved file to the path it names (or pass `pull --from FILE`), and rerun the pull.
 - If nothing changed, `pull` does nothing.
 - Otherwise it merges the published board with unpublished local changes. Conflicts on the same field stop the pull; ask which value to keep, then rerun with `--theirs` or `--ours`.
 
@@ -78,29 +78,22 @@ The Project fields are Trackerboard ID, Status (the nine phase statuses), Wave, 
 Every write to a linked Claude artifact ends with:
 
 ```
-publish: db_write {"slug":"…","ops":[{"op":"set","path":"board/state","ifVersion":7}]}
-         data = the contents of …/out/docs/<name>-<hash>.json
+publish: publish_files {"slug":"…","base_version":"<recorded version>","files":[{"as":"state.json","path":"…/out/docs/<name>-<hash>.json"}]}
 then:    trackerboard synced --board <name> --version <version from the result> --doc …
 ```
 
 The document includes the dependency-graph layout (computed with ELK by the CLI); the page only draws it. If the CLI warns that the layout was skipped, run `npm install` in the trackerboard repo; the publish still works.
 
-Make that call with the `mcp__claude-artifacts__db_write` tool (load it with ToolSearch `select:mcp__claude-artifacts__db_write,mcp__claude-artifacts__db_get` if it is deferred). `ArtifactData` no longer exists in the Claude Desktop build; the db tools replace it:
+The board is published as a file, `state.json`, next to the page. The page holds no copy of the board: it fetches `state.json` on load and every 30 seconds, so an open page follows publishes without a reload. `publish_files` uploads the file from disk, so the board never passes through the model and a publish costs almost no tokens, whatever its size. (`ArtifactData` no longer exists in the Claude Desktop build, and `db_write` would need the whole document inline.)
 
-- `slug` is the last path segment of the artifact URL.
-- The document is `board/state`. `db_write` has no file option, so read the named JSON file and pass its contents inline as the op's `data`.
-- `ifVersion` is the recorded db version; leave it out only when the document does not exist yet. `db_write` returns the new version; pass it to `synced`.
-- Send one `db_write` at a time and wait 2 seconds after a large one (rate limit).
-- `db_get` returns the document inline. If the result is saved to a file, extract the JSON data from it (not the summary line or the untrusted-document wrapper) into the file `refresh` names.
+Make that call with `mcp__claude-artifacts__publish_files` (load it with ToolSearch if it is deferred), then run the `synced` line with the version id from the result. The call changes only `state.json`; the page and any other files are kept. Batch several writes, then publish once: only the last write's steps matter.
 
-Then run the `synced` line with the `version` from the result. The page updates live for anyone viewing it. Batch several writes, then publish once: only the last write's steps matter.
-
-- **Refused for a version mismatch (`ifVersion`):** someone published in between. Run `trackerboard refresh`, make its `get` call, and run `pull`. That merges your changes onto theirs and prints a new publish step; make that call. Nothing needs to be redone.
-- **No `ifVersion` printed, and the write is refused because the document exists:** do the refresh steps, then `trackerboard push` and retry.
+- **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `get_artifact` call, then `pull` (reading `state.json` when it asks). That merges your changes onto theirs and prints a new publish step; make that call. Nothing needs to be redone.
+- **No recorded version:** the step prints `<version from get_artifact>`; make that call and use its version as `base_version`.
 
 Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 
-**First publish** (a new board, or an old hand-written tracker being replaced): run `trackerboard page`. It writes the page and prints a `publish_files` call plus the `db` capability to declare. Make the `publish_files` call, call `declare_capabilities` with the printed capabilities (`describe_capabilities` explains them), then `trackerboard link --url <artifact url>` and `trackerboard push`, and make the printed `db_write` call. To republish an existing page, call `get_artifact` first for the `base_version`. After publishing, the page HTML only needs republishing when this skill's page template changes (`trackerboard page` prints that call too).
+**First publish** (a new board, or an old hand-written tracker being replaced): run `trackerboard page`. It writes `index.html` (no board data) and the `state.json` document, and prints a `publish_files` call for both. Make it, then run the printed `trackerboard link --url <artifact url>` and `trackerboard synced --version <version from the result> --doc …`. No database or capability is needed. To republish only the page (when this skill's page template changes), run `trackerboard page` again; it prints a `publish_files` call for `index.html` alone.
 
 ## Reading
 

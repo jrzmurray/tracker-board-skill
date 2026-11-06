@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BoardError, newBoard, validate } from "./board.mjs";
+import { BoardError, migrateStatuses, newBoard, validate } from "./board.mjs";
 import { dataHome, resolveConfig } from "./config.mjs";
 import { initializeBackendFactories, openBackend } from "./backend.mjs";
 import "./backends/json.mjs";
@@ -161,6 +161,7 @@ export function loadBoard(name, options = {}) {
   const checked = checkName(name);
   if (!boardExists(checked)) throw new BoardError(`board "${checked}" not found; boards: ${listBoards().join(", ") || "(none)"}`);
   const board = backendFor(checked, options.cwd).load();
+  migrateStatuses(board);
   const snapshot = structuredClone(board);
   boardSnapshots.set(board, snapshot);
   latestSnapshots.set(checked, snapshot);

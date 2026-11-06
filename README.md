@@ -104,7 +104,7 @@ trackerboard <command> [options]
     --title                        Phase title.
     --lane                         Group within a wave.
     --owner                        Who is working it (agent id or person); "" clears it.
-    --status                       todo | active | review | waiting | blocked | done | ongoing | external | dropped
+    --status                       planning | planned | active | review | waiting | blocked | done | ongoing | external | dropped
                                    (aliases: merged, in-progress, not-started, n/a, ...).
     --note                         One-line detail shown under the status.
     --req --review --notes         Expandable details (markdown).
@@ -222,7 +222,7 @@ GitHub Project writes use reread-and-reconcile best effort because the API does 
 
 `trackerboard serve [--board NAME] [--port N]` serves an editable browser view over the active backend. It binds only to `127.0.0.1`; the printed URL contains a random per-run capability. Writes also require the matching bearer capability and same-origin request. The editor uses validated board operations rather than accepting a replacement board document. Local JSON and SQLite changes appear on the next two-second poll; GitHub Project state is cached for up to 60 seconds. You can open the printed URL in a browser panel beside the chat, but no Codex-specific integration is required.
 
-`trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is todo-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
+`trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is planned-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
 
 ## Data model
 
@@ -232,7 +232,7 @@ wave   id title prefix notes phases[]
 phase  id title lane owner status note req issue pr review notes deps[]
 ```
 
-`status` is one of `todo active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; `trackerboard dep graph` prints it as mermaid.
+`status` is one of `planning planned active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; `trackerboard dep graph` prints it as mermaid.
 
 The page draws the graph as plain SVG from geometry the CLI computes. Every publish runs ELK's layered algorithm (left to right, orthogonal edges, one box per wave when there are several) and stores the result as `layout` in the published document beside the board, so the page does no layout of its own. If elkjs is missing the CLI warns and publishes without `layout`, and the page falls back to a simple built-in layering; it does the same if the stored layout no longer matches the board's deps.
 
@@ -274,3 +274,11 @@ A binding is a local record that maps a repository (or directory) to a board, so
 ```bash
 npm test
 ```
+
+## Hierarchy, kanban and sessions
+
+- Boards nest: `trackerboard create <name> --parent <board>` (or `update --parent B`, `--parent ""` clears). A repo board holds sprint boards, which hold lane/agent boards. Progress rolls up from leaf phase counts; `dropped` phases are excluded from every total. A board with children is a roll-up: its own phases act as milestones. `trackerboard tree [--board B | --all]` prints the outline.
+- Pages show breadcrumbs to ancestors and, on a parent, a Boards panel with a progress meter per child linking to its page (the linked artifact if there is one, else `<name>.page.html` beside it).
+- The page has a List / Kanban toggle (kept per viewer); the dependency graph is shown in both.
+- `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
+- `planning` (plan being written) and `planned` (approved, not started) replace `todo`; stored `todo`/`not-started`/`pending` migrate to `planned` on load.

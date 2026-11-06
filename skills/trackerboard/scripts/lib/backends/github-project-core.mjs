@@ -15,7 +15,7 @@ export const PROJECT_FIELDS = [
   { name: "Owner", type: "TEXT" },
   { name: "Order", type: "NUMBER" },
 ];
-const DETAIL_FIELDS = ["note", "req", "issue", "pr", "review", "notes", "deps"];
+const DETAIL_FIELDS = ["session", "note", "req", "issue", "pr", "review", "notes", "deps"];
 const PHASE_MARKER = /<!-- trackerboard:phase:v(\d+):([A-Za-z0-9+/=]+) -->/;
 const META_MARKER = /<!-- trackerboard:metadata:v(\d+):([A-Za-z0-9+/=]+) -->/g;
 
@@ -297,7 +297,7 @@ export function makeMetadata(board, boardId, phaseItems = {}, pendingDelete = []
     bootstrapComplete,
     boardId,
     name: board.name,
-    fields: Object.fromEntries(["title", "subtitle", "lede", "notes", "repoUrl"].map((key) => [key, board[key]])),
+    fields: Object.fromEntries(["title", "subtitle", "lede", "notes", "repoUrl", "parent"].map((key) => [key, board[key]])),
     waves: board.waves.map((wave) => ({ id: wave.id, title: wave.title, prefix: wave.prefix, notes: wave.notes })),
     phaseIds,
     phaseLocations,
@@ -322,7 +322,7 @@ export function assertSizes(board, boardId, phaseItems = {}, pendingDelete = [])
 function flattenBoard(board) {
   const values = new Map();
   if (!board) return values;
-  for (const field of ["name", "title", "subtitle", "lede", "notes", "repoUrl", "log"]) values.set(`board:${field}`, board[field]);
+  for (const field of ["name", "title", "subtitle", "lede", "notes", "repoUrl", "parent", "log"]) values.set(`board:${field}`, board[field]);
   values.set("waves:order", board.waves.map((wave) => wave.id));
   for (const wave of board.waves) {
     values.set(`wave:${wave.id}:exists`, true);
@@ -331,7 +331,7 @@ function flattenBoard(board) {
     for (const phase of wave.phases) {
       values.set(`phase:${phase.id}:exists`, true);
       values.set(`phase:${phase.id}:wave`, wave.id);
-      for (const field of ["title", "lane", "owner", "status", "note", "req", "issue", "pr", "review", "notes", "deps"]) {
+      for (const field of ["title", "lane", "owner", "session", "status", "note", "req", "issue", "pr", "review", "notes", "deps"]) {
         values.set(`phase:${phase.id}:${field}`, phase[field]);
       }
     }

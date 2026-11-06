@@ -10,14 +10,14 @@
       color-scheme: light dark;
       --bg: #eef1f4; --paper: #fbfcfd; --ink: #16202b; --muted: #5a6878; --rule: #cfd7e0; --soft: #e3e8ee;
       --accent: #2b59c3; --accent-tint: #dde6f8;
-      --todo: #5a6878; --todo-bg: #e6eaef; --active: #9a5b00; --active-bg: #fbecd2; --review: #6a3fb5; --review-bg: #ece4f8;
+      --planned: #5a6878; --planned-bg: #e6eaef; --active: #9a5b00; --active-bg: #fbecd2; --review: #6a3fb5; --review-bg: #ece4f8;
       --waiting: #4c6070; --waiting-bg: #e2e9ee; --blocked: #b3261e; --blocked-bg: #f9e0dd; --done: #23744a; --done-bg: #dcf0e3;
       --ongoing: #1f6f86; --ongoing-bg: #dbeff4; --external: #7a5a2e; --external-bg: #f1e8da; --dropped: #8792a0; --dropped-bg: #eceff2;
       font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     }
     @media (prefers-color-scheme: dark) {
       :root { color-scheme: dark; --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
-        --accent:#86a8ff;--accent-tint:#22304d;--todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;
+        --accent:#86a8ff;--accent-tint:#22304d;--planned:#a3b0be;--planned-bg:#27313c;--planning:#8cc4ee;--planning-bg:#1a3347;--active:#f2b75c;--active-bg:#3b2c12;
         --review:#c3a5f5;--review-bg:#30244a;--waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;
         --done:#7fd6a2;--done-bg:#1b3a29;--ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;
         --dropped:#7f8b98;--dropped-bg:#222a33; }
@@ -74,7 +74,7 @@
     #log-list li { display: grid; grid-template-columns: 150px 1fr; gap: 12px; }
     #log-list time { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
     .status { display: inline-block; border-radius: 3px; padding: 2px 7px; font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .status-todo{background:var(--todo-bg);color:var(--todo)} .status-active{background:var(--active-bg);color:var(--active)}
+    .status-planning{background:var(--planning-bg);color:var(--planning)}.status-planned{background:var(--planned-bg);color:var(--planned)} .status-active{background:var(--active-bg);color:var(--active)}
     .status-review{background:var(--review-bg);color:var(--review)} .status-waiting{background:var(--waiting-bg);color:var(--waiting)}
     .status-blocked{background:var(--blocked-bg);color:var(--blocked)} .status-done{background:var(--done-bg);color:var(--done)}
     .status-ongoing{background:var(--ongoing-bg);color:var(--ongoing)} .status-external{background:var(--external-bg);color:var(--external)}
@@ -117,8 +117,8 @@
     (() => {
       const token = location.pathname.slice(1);
       const base = `/${token}`;
-      const statusLabels = { todo: "not started", active: "in progress", review: "in review", waiting: "waiting", blocked: "blocked", done: "done", ongoing: "ongoing", external: "external", dropped: "dropped" };
-      const statusOrder = ["todo", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped"];
+      const statusLabels = { planning: "planning", planned: "planned", active: "in progress", review: "in review", waiting: "waiting", blocked: "blocked", done: "done", ongoing: "ongoing", external: "external", dropped: "dropped" };
+      const statusOrder = ["planning", "planned", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped"];
       let snapshot = null;
       let dirty = false;
       let busy = false;
@@ -297,6 +297,7 @@
         field(grid, `Title for ${phase.id}`, "title", phase.title, { maxLength: 1_000 });
         field(grid, `Lane for ${phase.id}`, "lane", phase.lane, { maxLength: 120 });
         field(grid, `Owner for ${phase.id}`, "owner", phase.owner, { maxLength: 300 });
+        field(grid, `Session for ${phase.id}`, "session", phase.session, { maxLength: 1_000 });
         field(grid, `Dependencies for ${phase.id}`, "deps", (phase.deps || []).join(", "), { maxLength: 2_000 });
         const bar = element("div"); bar.className = "actions";
         button(bar, "Save", { primary: true });
@@ -305,7 +306,7 @@
         const detail = element("details");
         detail.append(element("summary", "Status and details"));
         const detailGrid = element("div"); detailGrid.className = "phase-detail-fields";
-        statusField(detailGrid, phase.status || "todo");
+        statusField(detailGrid, phase.status || "planned");
         detailGrid.append(createWaveSelect(`Move ${phase.id} to wave`, "toWave", wave.id, waves));
         field(detailGrid, `Note for ${phase.id}`, "note", phase.note, { maxLength: 4_000 });
         field(detailGrid, `Issue for ${phase.id}`, "issue", phase.issue, { maxLength: 1_000 });
@@ -330,7 +331,7 @@
         field(grid, "Title", "title", "", { maxLength: 1_000 });
         field(grid, "Lane", "lane", "", { maxLength: 120 });
         field(grid, "Owner", "owner", "", { maxLength: 300 });
-        statusField(grid, "todo");
+        statusField(grid, "planned");
         field(grid, "Depends on", "deps", "", { maxLength: 2_000 });
         form.append(grid);
         pushButton(form, "Add phase", { primary: true });

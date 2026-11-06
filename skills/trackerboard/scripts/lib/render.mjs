@@ -51,14 +51,14 @@ export function renderStandalone(board) {
 // The published form of a board: the board plus its computed graph layout.
 // If the layout engine is unavailable the page falls back to its own simple
 // layering, so a missing dependency never blocks a status update.
-export async function docBody(board, { prStates } = {}) {
+export async function docBody(board, { prStates, tree } = {}) {
   let layout = null;
   try {
     layout = await layoutBoard(board);
   } catch (e) {
     process.stderr.write(`warning: graph layout skipped (${e.code === "MODULE_NOT_FOUND" ? "elkjs not installed; run npm install in the trackerboard repo" : e.message})\n`);
   }
-  return { ...board, layout, ...(prStates ? { prStates } : {}) };
+  return { ...board, layout, ...(prStates ? { prStates } : {}), ...(tree ? { tree } : {}) };
 }
 
 export const DOC_COLLECTION = "board";

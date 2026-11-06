@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import * as B from "../lib/board.mjs";
 import * as S from "../lib/store.mjs";
 import { content, mergeBoards, sameContent } from "../lib/merge.mjs";
+import { boardTree } from "../lib/tree.mjs";
 import { CAPABILITIES, DOC_COLLECTION, DOC_ID, DOC_LIMIT, docBody, renderPage } from "../lib/render.mjs";
 
 const FRESH_SECONDS = Number(process.env.TRACKERBOARD_FRESH_SECONDS ?? 120);
@@ -46,7 +47,7 @@ export function createArtifactCommands({ boardName, out }) {
   }
 
   async function writeDoc(board, prStates) {
-    const body = JSON.stringify(await docBody(board, { prStates }));
+    const body = JSON.stringify(await docBody(board, { prStates, tree: boardTree(board.name) }));
     if (Buffer.byteLength(body) > DOC_LIMIT) {
       throw new B.BoardError(`board document is ${Buffer.byteLength(body)} bytes, over the ${DOC_LIMIT}-byte db limit; trim long fields or the log`);
     }
@@ -100,7 +101,7 @@ export function createArtifactCommands({ boardName, out }) {
       const board = S.loadBoard(name);
       const file = path.join(S.outDir(), `${name}.page.html`);
       fs.mkdirSync(S.outDir(), { recursive: true });
-      fs.writeFileSync(file, renderPage(await docBody(board, { prStates: cachedPrStates(name) })));
+      fs.writeFileSync(file, renderPage(await docBody(board, { prStates: cachedPrStates(name), tree: boardTree(name) })));
       const local = S.loadLocal(name);
       out(`ok: wrote ${file}`);
       if (local.artifactUrl) {
@@ -140,6 +141,7 @@ export function createArtifactCommands({ boardName, out }) {
       if (sent.name !== name) throw new B.BoardError(`document is board "${sent.name}", not "${name}"`);
       delete sent.layout;
       delete sent.prStates;
+      delete sent.tree;
       S.saveBase(name, sent);
       const local = S.loadLocal(name);
       local.dbVersion = version;
@@ -168,6 +170,7 @@ export function createArtifactCommands({ boardName, out }) {
       const from = opts.from || path.join(S.remoteDir(name), DOC_COLLECTION, `${DOC_ID}.json`);
       const remote = JSON.parse(fs.readFileSync(from, "utf8"));
       delete remote.layout; // derived; recomputed on every push
+      delete remote.tree;
       delete remote.prStates; // derived presentation data, never canonical board state
       if (remote.name !== name) throw new B.BoardError(`document is board "${remote.name}", not "${name}"`);
       B.validate(remote);

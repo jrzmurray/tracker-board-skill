@@ -65,7 +65,7 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(metadata.version, 1);
   assert.equal(metadata.bootstrapComplete, true);
   assert.ok(metadata.boardId);
-  assert.deepEqual(metadata.fields, { title: board.title, subtitle: board.subtitle, lede: board.lede, notes: board.notes, repoUrl: board.repoUrl });
+  assert.deepEqual(metadata.fields, { title: board.title, subtitle: board.subtitle, lede: board.lede, notes: board.notes, repoUrl: board.repoUrl, parent: board.parent });
   assert.deepEqual(metadata.waves, [{ id: "W1", title: "Wave One", prefix: "P", notes: "Wave details" }]);
   assert.deepEqual(metadata.log, board.log);
   assert.equal(Object.keys(metadata.phaseItems).length, STATUSES.length);

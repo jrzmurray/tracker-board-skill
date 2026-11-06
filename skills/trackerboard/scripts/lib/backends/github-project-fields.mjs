@@ -38,7 +38,7 @@ export function createGitHubProjectFieldManager({ client, readRemote, rereadBefo
           field = fieldByName(current.fields, definition.name);
           const refreshed = fieldOptions(field).map((option) => optionName(option).toLowerCase());
           if (STATUSES.some((status) => !refreshed.includes(status)) || refreshed.length !== STATUSES.length) {
-            throw new BoardError("GitHub Project Status field could not be configured with all nine canonical Trackerboard statuses.");
+            throw new BoardError("GitHub Project Status field could not be configured with all canonical Trackerboard statuses.");
           }
         }
       }

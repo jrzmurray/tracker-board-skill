@@ -2,11 +2,11 @@
 //
 // Layout under $TRACKERBOARD_HOME (default ~/.trackerboard):
 //   boards/<name>.json        board data (the source of truth)
-//   boards/<name>.local.json  machine-local state: bindings, artifact url, db version,
+//   boards/<name>.local.json  machine-local state: bindings, artifact url, artifact version,
 //                             when the artifact was last checked
-//   bases/<name>.json         the published document as of that db version (merge base)
-//   remote/<name>/            where `refresh` asks ArtifactData to save the published document
-//   out/docs/<name>-<hash>.json  db document bodies, written by every write and `push`
+//   bases/<name>.json         the published document as of that artifact version (merge base)
+//   remote/<name>/            where `refresh` expects the agent to save state.json (read_file)
+//   out/docs/<name>-<hash>.json  state.json bodies, written by every write and `push`
 //   out/<name>.html           static render, written by `render`
 
 import { createHash, randomUUID } from "node:crypto";
@@ -301,7 +301,7 @@ export function createBoard(name, opts, { binding = null } = {}) {
   const board = newBoard(name, opts);
   if (opts.repoUrl) board.repoUrl = sanitizeRepositoryUrl(opts.repoUrl);
   if (!resumeGithubBootstrap) {
-    const local = { bindings: [], artifactUrl: "", dbVersion: null, revision: 0, backendOverride: {} };
+    const local = { bindings: [], artifactUrl: "", artifactVersion: null, stateSha: null, pushedAt: null, revision: 0, backendOverride: {} };
     local.boardId = randomUUID();
     if (binding) {
       local.bindings.push(structuredClone(binding));
@@ -418,7 +418,7 @@ export function removeBoard(name) {
 }
 
 export function loadLocal(name) {
-  return readJson(localPath(checkName(name)), { bindings: [], artifactUrl: "", dbVersion: null, revision: 0, backendOverride: {} });
+  return readJson(localPath(checkName(name)), { bindings: [], artifactUrl: "", artifactVersion: null, stateSha: null, pushedAt: null, revision: 0, backendOverride: {} });
 }
 
 export function saveLocal(name, local) {

@@ -49,17 +49,20 @@ Phase fields
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
-Publish (Claude-specific: prints Artifact/ArtifactData tool calls; the CLI never contacts Claude)
+Publish (Claude-specific: prints claude-artifacts tool calls: publish_files, list_files, read_file; the CLI never contacts Claude)
   page                    Write the publishable page and print the first-publish steps.
   link --url URL          Record the artifact URL for this board.
-  push                    Write the db document and print the ArtifactData call.
-  synced --version N [--doc FILE]  Record the db version an ArtifactData write returned.
-  refresh                 Print the ArtifactData get that checks the published board.
+  push                    Write the state.json document and print the publish_files call.
+  synced --version N [--doc FILE]  Record the artifact version a publish_files returned.
+  refresh                 Print the list_files call that checks the published board.
+  check --version V --sha H [--overwrite]  Compare the live state.json hash with the last push (reads nothing).
   pull --version N [--from FILE] [--theirs | --ours]
                           Merge the fetched document into the local board
                           (no-op when N is the recorded version).
-  Writes to a linked board need a refresh within ${FRESH_SECONDS_HELP}s
-  (TRACKERBOARD_FRESH_SECONDS); otherwise they print the refresh steps and stop.
+  Edits always apply locally. Only a Claude harness (CLAUDECODE set, or
+  TRACKERBOARD_PUBLISHER=1) is shown the publish/refresh steps; other agents
+  just edit, and a Claude agent publishes. Reads note a stale check after
+  ${FRESH_SECONDS_HELP}s (TRACKERBOARD_FRESH_SECONDS).
   render [--out FILE]     Write a static HTML snapshot (for local preview).
 
 Generated boards (the input format is board.schema.json)
@@ -86,7 +89,7 @@ Backend and local editor
 
 // ---------- args ----------
 
-const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
+const BOOL = new Set(["replace", "dry-run", "ids", "pr-list", "theirs", "ours", "overwrite", "force", "json", "no-bind", "branch", "all", "help", "foreground", "run-server"]);
 const ALIASES = { "status-note": "note", requirements: "req", "repo-url": "repoUrl", depends: "deps", "depends-on": "deps" };
 
 function parseArgs(argv) {
@@ -362,7 +365,7 @@ async function main(argv) {
 
   const boardScoped = new Set([
     "bind", "unbind", "create", "remove", "insert", "update", "delete", "rm", "dep", "log",
-    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull",
+    "import", "github", "refresh-prs", "backend", "migrate", "page", "link", "push", "synced", "pull", "check",
   ]);
   let lockName = null;
   if (boardScoped.has(cmd)) {

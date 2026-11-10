@@ -10,7 +10,7 @@ Boards are edited with one CLI command per change. Use the optional Claude artif
 ./install.sh
 ```
 
-By default this installs the CLI at `~/.local/bin/trackerboard` and leaves Claude-specific setup out. To also link the optional Claude Code skill, run `./install.sh --claude-skill`. `TRACKERBOARD_BIN_DIR` selects a custom CLI directory. `CLAUDE_SKILLS_DIR` selects a custom skill directory and, for compatibility with existing installs, also opts into skill linking. The installer needs Node 20 or newer and installs [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
+By default this installs the CLI at `~/.local/bin/trackerboard` and leaves Claude-specific setup out. To also link the optional Claude Code skill, run `./install.sh --claude-skill`. `TRACKERBOARD_BIN_DIR` selects a custom CLI directory. `CLAUDE_SKILLS_DIR` selects a custom skill directory and, for compatibility with existing installs, also opts into skill linking. The installer needs Node 24 or newer and installs [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
 
 ### Claude Code plugin
 

@@ -90,6 +90,7 @@ Make that call with `mcp__claude-artifacts__publish_files` (load it with ToolSea
 
 - **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `list_files` call, then `check`. If the board itself changed, `check` stops and offers `--overwrite` or a deliberate `pull` merge; otherwise it prints a new publish step. Make that call.
 - **No recorded version:** `push` and `page` print the check steps instead of a publish, because a publish could replace a board this machine never compared. Run `trackerboard check` (use `--sha none` if the artifact has no `state.json`, e.g. a legacy page; then `page` republishes the page together with one).
+- **Don't read the page to update it.** Without `publish_files`, the `Artifact` tool refuses a first publish to an artifact the session has not viewed and returns the live page to merge onto. For a legacy artifact that page embeds the whole board (about 90k tokens on a large one), and rendering or reading it is never needed: the CLI already holds the board, and `page` and `push` write every file that gets published. Only when the user says to replace the page without looking, pass the paths in `overwrite_unread` so the read is skipped. A page already migrated to `state.json` is small, so the one-time read is cheap.
 
 Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 

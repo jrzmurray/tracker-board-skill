@@ -1,7 +1,7 @@
 ---
 name: trackerboard
 description: Create and edit harness-neutral phase/wave boards with the trackerboard CLI. JSON is the default backend; Claude artifact publishing is optional. Use for any tracker-board change, including phase or wave CRUD, status/PR/notes fields, dependencies, and generated-board imports.
-argument-hint: "[create|insert|update|delete|dep|log|show|refresh|page|import|github] [--board name] [--phase id] …"
+argument-hint: "[show|insert|update|delete|dep|log|create|boards|bind|refresh|check|push|page|pull|synced|link|import|github|refresh-prs|render|serve|migrate] [--board name] [--phase id] [--status s] …"
 ---
 
 # trackerboard

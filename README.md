@@ -12,6 +12,17 @@ Boards are edited with one CLI command per change. Use the optional Claude artif
 
 By default this installs the CLI at `~/.local/bin/trackerboard` and leaves Claude-specific setup out. To also link the optional Claude Code skill, run `./install.sh --claude-skill`. `TRACKERBOARD_BIN_DIR` selects a custom CLI directory. `CLAUDE_SKILLS_DIR` selects a custom skill directory and, for compatibility with existing installs, also opts into skill linking. The installer needs Node 20 or newer and installs [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
 
+### Claude Code plugin
+
+The repo is also a Claude Code plugin named `trackerboard`. It adds one slash command per CLI action, each with its own typeahead hint (for example `/trackerboard:update` suggests `--phase P [--status S] [--owner O] …`, and `/trackerboard:check` suggests `--version V --sha <sha256|none> [--overwrite]`), plus the `trackerboard` skill:
+
+```
+claude plugin marketplace add jrzmurray/tracker-board-skill
+claude plugin install trackerboard@tracker-board
+```
+
+To try it from a checkout without installing, run `claude --plugin-dir .` in the repo. `claude plugin validate .` checks the manifests and every command file. The commands run the CLI from the plugin (`${CLAUDE_PLUGIN_ROOT}`), so the plugin needs `npm install` run once in its directory for the layout engine; the CLI warns if it is missing and the publish still works.
+
 ## Use
 
 ```bash

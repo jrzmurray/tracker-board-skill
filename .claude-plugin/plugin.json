@@ -1,0 +1,11 @@
+{
+  "name": "trackerboard",
+  "version": "0.1.0",
+  "description": "Phase/wave tracker boards: one /trackerboard:<action> command per CLI action, plus the trackerboard skill.",
+  "author": {
+    "name": "jrzmurray"
+  },
+  "homepage": "https://github.com/jrzmurray/tracker-board-skill",
+  "repository": "https://github.com/jrzmurray/tracker-board-skill",
+  "license": "MIT"
+}

@@ -1,7 +1,7 @@
 ---
 description: Refresh derived PR lifecycle badges
 argument-hint: "[--repo OWNER/NAME] [--limit N]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `refresh-prs` action with Bash and follow its output:

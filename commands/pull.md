@@ -1,7 +1,8 @@
 ---
 description: Merge a downloaded state.json into the local board
 argument-hint: "--version V [--from FILE] [--theirs | --ours]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
+disable-model-invocation: true
 ---
 
 Run the trackerboard `pull` action with Bash and follow its output:

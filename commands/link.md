@@ -1,7 +1,7 @@
 ---
 description: Record the claude.ai artifact URL for this board
 argument-hint: "--url https://claude.ai/artifact/<id>"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `link` action with Bash and follow its output:

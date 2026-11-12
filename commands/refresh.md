@@ -1,7 +1,7 @@
 ---
 description: Print the list_files call that checks the published board
 argument-hint: "[--board B]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `refresh` action with Bash and follow its output:

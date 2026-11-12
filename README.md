@@ -21,7 +21,7 @@ claude plugin marketplace add jrzmurray/tracker-board-skill
 claude plugin install trackerboard@tracker-board
 ```
 
-To try it from a checkout without installing, run `claude --plugin-dir .` in the repo. `claude plugin validate .` checks the manifests and every command file. The commands run the CLI from the plugin (`${CLAUDE_PLUGIN_ROOT}`), so the plugin needs `npm install` run once in its directory for the layout engine; the CLI warns if it is missing and the publish still works.
+To try it from a checkout without installing, run `claude --plugin-dir .` in the repo. `claude plugin validate .` checks the manifests and every command file. The commands run the CLI from the plugin (`${CLAUDE_PLUGIN_ROOT}`), pre-approving only that script, and `delete`, `remove`, `migrate` and `pull` can only be run by you, never by the model. A SessionStart hook installs the layout engine and markdown renderer once into the plugin's data directory and links them in, so nothing is lost when the plugin updates and you never run `npm install` yourself. Commands in `commands/` are generated: edit `scripts/commands.json` and run `node scripts/gen-commands.mjs` (CI checks it).
 
 ## Use
 

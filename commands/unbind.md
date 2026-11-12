@@ -1,7 +1,7 @@
 ---
 description: Remove this directory's board binding
 argument-hint: "[--board B] [--all]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `unbind` action with Bash and follow its output:

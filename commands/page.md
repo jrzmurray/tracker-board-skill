@@ -1,7 +1,7 @@
 ---
 description: Write the page and state.json and print the first-publish or page-update steps
 argument-hint: "[--board B]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `page` action with Bash and follow its output:

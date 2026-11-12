@@ -1,7 +1,7 @@
 ---
 description: Show the board, or filter phases by wave, lane, status or owner
 argument-hint: "[--phase P] [--wave W] [--lane L] [--status S,S] [--owner O] [--ids | --pr-list | --json]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `show` action with Bash and follow its output:

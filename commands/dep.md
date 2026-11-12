@@ -1,7 +1,7 @@
 ---
 description: List, graph or edit phase dependencies
 argument-hint: "list [P] | graph | ready | add <P> --on A,B | rm <P> --on A | set <P> --on A,B | clear <P>"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `dep` action with Bash and follow its output:

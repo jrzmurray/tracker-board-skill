@@ -1,7 +1,7 @@
 ---
 description: List boards and mark the one this directory uses
 argument-hint: "(no arguments)"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `boards` action with Bash and follow its output:

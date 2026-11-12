@@ -1,7 +1,7 @@
 ---
 description: Create a board and bind it to this repo
 argument-hint: "<name> [--title T] [--repo-url URL] [--branch] [--no-bind]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `create` action with Bash and follow its output:

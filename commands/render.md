@@ -1,7 +1,7 @@
 ---
 description: Write a static HTML snapshot of the board for local preview
 argument-hint: "[--out FILE]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `render` action with Bash and follow its output:

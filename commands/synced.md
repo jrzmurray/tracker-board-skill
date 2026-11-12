@@ -1,7 +1,7 @@
 ---
 description: Record the artifact version a publish returned
 argument-hint: "--version V [--doc FILE]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `synced` action with Bash and follow its output:

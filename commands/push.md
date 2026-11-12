@@ -1,7 +1,7 @@
 ---
 description: Write state.json and print the publish_files call
 argument-hint: "[--board B]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `push` action with Bash and follow its output:

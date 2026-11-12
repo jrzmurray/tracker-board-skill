@@ -1,7 +1,7 @@
 ---
 description: Add a phase or a wave
 argument-hint: "--phase P [--wave W] [--title T] [--lane L] [--status S] [--deps A,B] | --wave W [--title T] [--after W2]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `insert` action with Bash and follow its output:

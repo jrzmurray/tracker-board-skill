@@ -1,7 +1,8 @@
 ---
 description: Delete a phase or a wave
 argument-hint: "--phase P | --wave W [--force]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
+disable-model-invocation: true
 ---
 
 Run the trackerboard `delete` action with Bash and follow its output:

@@ -1,7 +1,7 @@
 ---
 description: Create or update a board from generated board JSON
 argument-hint: "[name] --from FILE [--replace] [--keep owner,note] [--branch] [--no-bind]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `import` action with Bash and follow its output:

@@ -1,7 +1,7 @@
 ---
 description: Make this repo use a board so --board can be omitted
 argument-hint: "[--board B] [--branch]"
-allowed-tools: Bash(node:*), Bash(trackerboard:*)
+allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 
 Run the trackerboard `bind` action with Bash and follow its output:

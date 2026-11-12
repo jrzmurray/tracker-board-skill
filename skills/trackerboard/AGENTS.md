@@ -79,10 +79,9 @@ The local CLI works without Claude. This section applies only to a board linked 
   - **Version mismatch:** someone published in between. Refresh as above, then publish the step that `pull` prints. Nothing needs to be redone.
 - **Other harnesses:** nothing is linked, so there is no refresh or publish step. The active backend is the source of truth. The JSON backend coordinates agents on this machine with a lock. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.
 
-## Hierarchy, kanban and sessions
+## Hierarchy and sessions
 
 - Boards nest: `trackerboard create <name> --parent <board>` (or `update --parent B`, `--parent ""` clears). A repo board holds sprint boards, which hold lane/agent boards. Progress rolls up from leaf phase counts; `dropped` phases are excluded from every total. A board with children is a roll-up: its own phases act as milestones. `trackerboard tree [--board B | --all]` prints the outline.
 - Pages show breadcrumbs to ancestors and, on a parent, a Boards panel with a progress meter per child linking to its page (the linked artifact if there is one, else `<name>.page.html` beside it).
-- The page has a List / Kanban toggle (kept per viewer); the dependency graph is shown in both.
 - `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
 - `planning` (plan being written) and `planned` (approved, not started) replace `todo`; stored `todo`/`not-started`/`pending` migrate to `planned` on load.

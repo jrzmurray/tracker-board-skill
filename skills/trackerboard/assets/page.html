@@ -129,6 +129,30 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .notes p{margin:0 0 8px;max-width:80ch}
 .empty{text-align:center;padding:48px 20px;color:var(--muted)}
 .empty h2{color:var(--ink);margin-bottom:8px}
+.viewtoggle{display:inline-flex;border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+.viewtoggle button{font:600 12px var(--body);border:0;background:var(--paper);color:var(--ink);padding:5px 12px;cursor:pointer}
+.viewtoggle button[aria-pressed="true"]{background:var(--accent);color:var(--paper)}
+.kanban{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,1fr);gap:10px;overflow-x:auto;padding-bottom:6px}
+.kcol{background:var(--soft);border-radius:8px;padding:8px;min-width:0}
+.kcol>h3{font:600 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;margin:2px 4px 8px;display:flex;justify-content:space-between;gap:6px}
+.kcol>h3 i{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.kcard{background:var(--paper);border:1px solid var(--rule);border-top:3px solid var(--kc,var(--rule));border-radius:6px;padding:8px 10px;margin-bottom:8px;display:grid;gap:4px;cursor:pointer}
+.kcard:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#tb-modal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+#tb-modal[hidden]{display:none}
+#tb-modal .mbox{background:var(--paper);color:var(--ink);border:1px solid var(--rule);border-top:4px solid var(--kc,var(--rule));border-radius:10px;max-width:640px;width:100%;max-height:calc(100vh - 32px);overflow:auto;padding:16px 18px;display:grid;gap:12px}
+#tb-modal .mhead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+#tb-modal .mhead h2{margin:0;font-size:18px;line-height:1.3}
+#tb-modal .mhead .pid{font:600 12px var(--mono);display:block;margin-bottom:4px}
+#tb-modal .mclose{border:1px solid var(--rule);background:var(--paper);color:var(--ink);border-radius:6px;font:16px var(--mono);width:30px;height:30px;cursor:pointer;flex:none}
+#tb-modal dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0}
+#tb-modal dt{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);padding-top:2px}
+#tb-modal dd{margin:0;min-width:0;overflow-wrap:anywhere}
+#tb-modal .field h3{font:600 11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+.kcard:hover{border-color:var(--accent);border-top-color:var(--kc)}
+.kcard .pid{font:600 12px var(--mono)}
+.kcard .meta{font:11px var(--mono);color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 10px}
+.kempty{color:var(--muted);font-size:12px;margin:4px}
 .status-todo{background:var(--todo-bg);color:var(--todo)}.status-active{background:var(--active-bg);color:var(--active)}
 .status-review{background:var(--review-bg);color:var(--review)}.status-waiting{background:var(--waiting-bg);color:var(--waiting)}
 .status-blocked{background:var(--blocked-bg);color:var(--blocked)}.status-done{background:var(--done-bg);color:var(--done)}
@@ -166,6 +190,9 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   // Filter: any of the selected statuses (none selected = every status), and
   // the selected owner if one is. Kept per viewer in localStorage.
   let statuses = new Set(), owner = null, dimOthers = false;
+  let view = "list";
+  try { view = localStorage.getItem("tb-view") === "kanban" ? "kanban" : "list"; } catch {}
+  if (/(^|[#&])view=kanban/.test(location.hash)) view = "kanban";
   // The Issue column appears only when some phase on the board has an issue.
   let hasIssues = false;
   try {
@@ -317,6 +344,21 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     }).join("");
   }
 
+  // Kanban: one column per status, cards coloured by status. Same filters as the list.
+  function kanban(b) {
+    const all = phasesOf(b).filter(({ phase }) => matches(phase));
+    const cols = ["todo","waiting","blocked","active","review","done","ongoing","external","dropped"]
+      .filter((s) => ["todo","active","review","blocked","done"].includes(s) || all.some(({ phase }) => phase.status === s));
+    const body = cols.map((s) => {
+      const cards = all.filter(({ phase }) => phase.status === s).map(({ wave, phase }) => `<div class="kcard" style="--kc:var(--${s})" data-card="${esc(phase.id)}" tabindex="0" role="button" aria-haspopup="dialog">
+          <div><span class="pid">${esc(phase.id)}</span> ${phase.owner ? ownerGlyph(phase.owner) : ""}</div>
+          <div>${inline(phase.title)}</div>
+          <div class="meta"><span>${esc(wave.id)}</span>${phase.lane ? `<span>lane ${esc(phase.lane)}</span>` : ""}${phase.pr ? `<span>${inline(phase.pr)}</span>` : ""}${phase.deps.length ? `<span>← ${phase.deps.map(esc).join(", ")}</span>` : ""}</div>
+        </div>`).join("");
+      return `<div class="kcol" aria-label="${LABEL[s]}"><h3><span><i style="background:var(--${s})"></i>${LABEL[s]}</span><span>${all.filter(({ phase }) => phase.status === s).length}</span></h3>${cards || `<div class="kempty">none</div>`}</div>`;
+    }).join("");
+    return `<section class="panel" aria-label="Kanban"><div class="kanban">${body}</div></section>`;
+  }
   // Layered left-to-right DAG: column = longest dependency chain, rows ordered
   // by a barycenter pass so edges cross less.
   // Geometry comes precomputed from the CLI (ELK layered layout, stored as
@@ -607,8 +649,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
         <div class="stamp">${updated}</div>
       </header>
       ${summary(board)}
-      <div class="tools"><button class="btn" id="tb-expand">Expand all</button><button class="btn" id="tb-collapse">Collapse all</button></div>
-      ${board.waves.length ? waves(board) : `<section class="panel empty"><h2>No phases yet</h2><p>Add one with <code>trackerboard insert --phase P1 --title "…"</code>.</p></section>`}
+      <div class="tools"><span class="viewtoggle" role="group" aria-label="View"><button data-view="list" aria-pressed="${view === "list"}">List</button><button data-view="kanban" aria-pressed="${view === "kanban"}">Kanban</button></span>${view === "list" ? `<button class="btn" id="tb-expand">Expand all</button><button class="btn" id="tb-collapse">Collapse all</button>` : ""}</div>
+      ${board.waves.length ? (view === "kanban" ? kanban(board) : waves(board)) : `<section class="panel empty"><h2>No phases yet</h2><p>Add one with <code>trackerboard insert --phase P1 --title "…"</code>.</p></section>`}
       ${graph(board)}
       ${board.log && board.log.length ? `<section class="panel" aria-label="Change log"><h2 style="margin-bottom:10px">Recent changes</h2><ul class="log">${board.log.map((e) => `<li><time datetime="${esc(e.at)}">${fmtTime(e.at)}</time><div>${inline(e.text)}</div></li>`).join("")}</ul></section>` : ""}
       ${board.notes ? `<section class="panel notes" aria-label="Notes"><h2 style="margin-bottom:10px">Notes</h2>${md(board.notes)}</section>` : ""}`;
@@ -616,6 +658,8 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   }
 
   app.addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]");
+    if (v) { view = v.dataset.view; try { localStorage.setItem("tb-view", view); } catch {} render(); return; }
     const f = e.target.closest("[data-status],[data-owner],[data-clear],[data-gdim]");
     if (f) {
       const d = f.dataset;
@@ -661,6 +705,60 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   app.addEventListener("keydown", (e) => {
     const j = e.target.closest && e.target.closest(".gnode");
     if (j && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); jump(j.dataset.jump); }
+  });
+  // Kanban card detail: everything recorded on the phase, in a dialog.
+  const modal = document.createElement("div");
+  modal.id = "tb-modal"; modal.hidden = true;
+  document.body.appendChild(modal);
+  let modalFrom = null;
+  function closeModal() { modal.hidden = true; modal.innerHTML = ""; if (modalFrom && modalFrom.isConnected) modalFrom.focus(); modalFrom = null; }
+  function openCard(id, from) {
+    const found = phasesOf(board).find(({ phase }) => keyOf(phase.id) === keyOf(id));
+    if (!found) return;
+    const { wave, phase } = found, statusOf = new Map(phasesOf(board).map(({ phase: q }) => [keyOf(q.id), q.status]));
+    const row = (h, v) => v ? `<dt>${h}</dt><dd>${v}</dd>` : "";
+    const deps = phase.deps.length ? phase.deps.map((d) => {
+      const s = statusOf.get(keyOf(d));
+      return `<a href="#" data-card-open="${esc(d)}">${esc(d)}${s ? ` (${esc(LABEL[s] || s)})` : ""}</a>`;
+    }).join(", ") : "";
+    const badges = (board.prStates?.[phase.id] || []).map((pr) => `<span class="pr-badge status-${esc(pr.status)}">${esc(pr.label)} ${inline("#" + pr.number)}</span>`).join(" ");
+    const issue = phase.issue ? inline(/^\d+$/.test(String(phase.issue).trim()) ? "#" + String(phase.issue).trim() : phase.issue, "issues") : "";
+    const facts = [row("Status", pill(phase.status) + (phase.note ? ` <span class="snote">${inline(phase.note)}</span>` : "")),
+      row("Owner", phase.owner ? ownerGlyph(phase.owner) + " " + esc(phase.owner) : ""),
+      row("Wave", esc(wave.title ? wave.id + " - " + wave.title : wave.id)), row("Lane", phase.lane ? esc(phase.lane) : ""),
+      row("Depends on", deps), row("Issue", issue), row("PR", (phase.pr ? inline(phase.pr) : "") + (badges ? " " + badges : ""))].join("");
+    const longs = [["Requirements", phase.req], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v)
+      .map(([h, v]) => `<div class="field"><h3>${h}</h3>${md(v)}</div>`).join("");
+    modal.innerHTML = `<div class="mbox" role="dialog" aria-modal="true" aria-labelledby="tb-mtitle" style="--kc:var(--${phase.status})">
+      <div class="mhead"><div><span class="pid">${esc(phase.id)}</span><h2 id="tb-mtitle">${inline(phase.title)}</h2></div><button class="mclose" data-modal-close aria-label="Close">×</button></div>
+      <dl>${facts}</dl>${longs}</div>`;
+    if (modal.hidden) modalFrom = from || null;
+    modal.hidden = false;
+    modal.querySelector(".mclose").focus();
+  }
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal || e.target.closest("[data-modal-close]")) { closeModal(); return; }
+    const o = e.target.closest("[data-card-open]");
+    if (o) { e.preventDefault(); openCard(o.dataset.cardOpen); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.hidden) { closeModal(); return; }
+    if (e.key === "Tab" && !modal.hidden) {
+      const f = [...modal.querySelectorAll("a[href],button")];
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  app.addEventListener("click", (e) => {
+    if (e.target.closest("a")) return;
+    const c = e.target.closest("[data-card]");
+    if (c) openCard(c.dataset.card, c);
+  });
+  app.addEventListener("keydown", (e) => {
+    const c = e.target.closest && e.target.closest(".kcard");
+    if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCard(c.dataset.card, c); }
   });
   app.addEventListener("toggle", (e) => {
     const d = e.target;

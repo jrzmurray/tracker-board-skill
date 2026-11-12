@@ -1,0 +1,156 @@
+[
+  {
+    "action": "backend",
+    "description": "Show or select the board storage backend",
+    "hint": "[--json] | --set-binding KEY",
+    "note": ""
+  },
+  {
+    "action": "bind",
+    "description": "Make this repo use a board so --board can be omitted",
+    "hint": "[--board B] [--branch]",
+    "note": ""
+  },
+  {
+    "action": "boards",
+    "description": "List boards and mark the one this directory uses",
+    "hint": "(no arguments)",
+    "note": ""
+  },
+  {
+    "action": "check",
+    "description": "Compare the published state.json hash with the last push",
+    "hint": "--version V --sha <sha256|none> [--overwrite]",
+    "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data. If it reports diverged, stop and ask the user; --overwrite replaces the other writer's board on the next push."
+  },
+  {
+    "action": "create",
+    "description": "Create a board and bind it to this repo",
+    "hint": "<name> [--title T] [--repo-url URL] [--branch] [--no-bind]",
+    "note": ""
+  },
+  {
+    "action": "delete",
+    "description": "Delete a phase or a wave",
+    "hint": "--phase P | --wave W [--force]",
+    "note": "Confirm with the user before deleting a wave that still has phases (--force).",
+    "userOnly": true
+  },
+  {
+    "action": "dep",
+    "description": "List, graph or edit phase dependencies",
+    "hint": "list [P] | graph | ready | add <P> --on A,B | rm <P> --on A | set <P> --on A,B | clear <P>",
+    "note": ""
+  },
+  {
+    "action": "github",
+    "description": "Fill phase PR and issue fields from open GitHub PRs and issues",
+    "hint": "[--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE]",
+    "note": ""
+  },
+  {
+    "action": "import",
+    "description": "Create or update a board from generated board JSON",
+    "hint": "[name] --from FILE [--replace] [--keep owner,note] [--branch] [--no-bind]",
+    "note": ""
+  },
+  {
+    "action": "insert",
+    "description": "Add a phase or a wave",
+    "hint": "--phase P [--wave W] [--title T] [--lane L] [--status S] [--deps A,B] | --wave W [--title T] [--after W2]",
+    "note": ""
+  },
+  {
+    "action": "link",
+    "description": "Record the claude.ai artifact URL for this board",
+    "hint": "--url https://claude.ai/artifact/<id>",
+    "note": ""
+  },
+  {
+    "action": "log",
+    "description": "Append a line to the board's change log",
+    "hint": "\"<text>\"",
+    "note": ""
+  },
+  {
+    "action": "migrate",
+    "description": "Move a board to the json, sqlite or github backend",
+    "hint": "--to json|sqlite|github [--binding KEY] [--dry-run]",
+    "note": "Migrating detaches a linked Claude artifact; use --dry-run first and confirm with the user.",
+    "userOnly": true
+  },
+  {
+    "action": "page",
+    "description": "Write the page and state.json and print the first-publish or page-update steps",
+    "hint": "[--board B]",
+    "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data."
+  },
+  {
+    "action": "pull",
+    "description": "Merge a downloaded state.json into the local board",
+    "hint": "--version V [--from FILE] [--theirs | --ours]",
+    "note": "This is the deliberate, token-costly path: it needs read_file of state.json first. If it stops on a conflict, ask the user which side wins.",
+    "userOnly": true
+  },
+  {
+    "action": "push",
+    "description": "Write state.json and print the publish_files call",
+    "hint": "[--board B]",
+    "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data."
+  },
+  {
+    "action": "refresh-prs",
+    "description": "Refresh derived PR lifecycle badges",
+    "hint": "[--repo OWNER/NAME] [--limit N]",
+    "note": ""
+  },
+  {
+    "action": "refresh",
+    "description": "Print the list_files call that checks the published board",
+    "hint": "[--board B]",
+    "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data."
+  },
+  {
+    "action": "remove",
+    "description": "Delete a board and its local state (needs --force)",
+    "hint": "<name> --force",
+    "note": "Deleting is permanent: confirm the board name with the user first.",
+    "userOnly": true
+  },
+  {
+    "action": "render",
+    "description": "Write a static HTML snapshot of the board for local preview",
+    "hint": "[--out FILE]",
+    "note": ""
+  },
+  {
+    "action": "serve",
+    "description": "Start or stop the local board editor",
+    "hint": "[--board NAME] [--port N] [--foreground] | status | stop",
+    "note": ""
+  },
+  {
+    "action": "show",
+    "description": "Show the board, or filter phases by wave, lane, status or owner",
+    "hint": "[--phase P] [--wave W] [--lane L] [--status S,S] [--owner O] [--ids | --pr-list | --json]",
+    "note": "This prints board data, so run it only because the user asked to see the board."
+  },
+  {
+    "action": "synced",
+    "description": "Record the artifact version a publish returned",
+    "hint": "--version V [--doc FILE]",
+    "note": ""
+  },
+  {
+    "action": "unbind",
+    "description": "Remove this directory's board binding",
+    "hint": "[--board B] [--all]",
+    "note": ""
+  },
+  {
+    "action": "update",
+    "description": "Change a phase, a wave or the board's own fields",
+    "hint": "--phase P [--status S] [--owner O] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T]",
+    "note": ""
+  }
+]

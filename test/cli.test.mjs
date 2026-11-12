@@ -326,6 +326,21 @@ test("stale edits to a linked board apply; only Claude harnesses see publish ste
   assert.doesNotMatch(run(["show"], { env: { TRACKERBOARD_PUBLISHER: "0", TRACKERBOARD_FRESH_SECONDS: "-1" } }).stdout, /note: last checked/);
 });
 
+test("a board with no artifact prints no sync steps; other agents see no publish hint at all", () => {
+  for (const publisher of ["1", "0"]) {
+    const env = { env: { TRACKERBOARD_PUBLISHER: publisher, TRACKERBOARD_FRESH_SECONDS: "-1" } };
+    const { run } = sandbox();
+    run(["create", "b"], env);
+    for (const args of [["insert", "--phase", "P1"], ["update", "--phase", "P1", "--status", "done"], ["log", "note"], ["show"]]) {
+      // Claude harnesses get one hint that `page` can publish a first artifact; nobody gets sync steps.
+      const out = run(args, env).stdout.replace(/^publish: \(no artifact linked[^\n]*\n/m, publisher === "1" ? "" : "$&");
+      assert.doesNotMatch(out, /publish|list_files|refresh|check|saved locally|last checked/, `publisher=${publisher} ${args[0]}`);
+    }
+    assert.match(run(["show"], env).stdout, /P1/);
+    assert.doesNotMatch(run(["push"], env).stdout, /publish_files \{/);
+  }
+});
+
 test("show filters by lane, status and owner, and lists ids or PRs", () => {
   const { run } = sandbox();
   run(["create", "b"]);

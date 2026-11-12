@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Generated commands are up to date
+        run: node scripts/gen-commands.mjs --check
+      - name: Validate plugin manifests and commands
+        run: npx --yes @anthropic-ai/claude-code@2.1.311 plugin validate .

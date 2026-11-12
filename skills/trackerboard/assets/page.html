@@ -350,16 +350,16 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   function kanban(b) {
     const all = phasesOf(b).filter(({ phase }) => matches(phase));
     const cols = ["todo","waiting","blocked","active","review","done","ongoing","external","dropped"]
-      .filter((s) => ["todo","active","review","blocked","done"].includes(s) || all.some(({ phase }) => phase.status === s));
+      .filter((s) => all.some(({ phase }) => phase.status === s)); // columns with no cards are hidden
     const body = cols.map((s) => {
       const cards = all.filter(({ phase }) => phase.status === s).map(({ wave, phase }) => `<div class="kcard" style="--kc:var(--${s})" data-card="${esc(phase.id)}" tabindex="0" role="button" aria-haspopup="dialog">
           <div><span class="pid">${esc(phase.id)}</span> ${phase.owner ? ownerGlyph(phase.owner) : ""}</div>
           <div>${inline(phase.title)}</div>
           <div class="meta"><span>${esc(wave.id)}</span>${phase.lane ? `<span>lane ${esc(phase.lane)}</span>` : ""}${phase.pr ? `<span>${inline(phase.pr)}</span>` : ""}${phase.deps.length ? `<span>← ${phase.deps.map(esc).join(", ")}</span>` : ""}</div>
         </div>`).join("");
-      return `<div class="kcol" aria-label="${LABEL[s]}"><h3><span><i style="background:var(--${s})"></i>${LABEL[s]}</span><span>${all.filter(({ phase }) => phase.status === s).length}</span></h3>${cards || `<div class="kempty">none</div>`}</div>`;
+      return `<div class="kcol" aria-label="${LABEL[s]}"><h3><span><i style="background:var(--${s})"></i>${LABEL[s]}</span><span>${all.filter(({ phase }) => phase.status === s).length}</span></h3>${cards}</div>`;
     }).join("");
-    return `<section class="panel" aria-label="Kanban"><div class="kanban">${body}</div></section>`;
+    return `<section class="panel" aria-label="Kanban">${cols.length ? `<div class="kanban">${body}</div>` : `<div class="kempty">No phases match the filter.</div>`}</section>`;
   }
   // Layered left-to-right DAG: column = longest dependency chain, rows ordered
   // by a barycenter pass so edges cross less.

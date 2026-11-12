@@ -254,7 +254,7 @@ phase  id title lane owner status note req issue pr review notes deps[]
 
 `status` is one of `todo active review waiting blocked done ongoing external dropped`. The dependency graph is the `deps` lists; `trackerboard dep graph` prints it as mermaid.
 
-The page has a List / Kanban toggle. Kanban shows one column per status, with the same status and owner filters as the list; clicking a card opens a dialog with everything recorded on the phase. The choice is kept per viewer in the browser (`#view=kanban` in the URL opens it directly), and the dependency graph shows in both views.
+The page has a List / Kanban toggle. Kanban shows one column per status, with the same status and owner filters as the list; clicking a card opens a dialog with everything recorded on the phase (Enter or Space on a focused card does the same). Arrow keys move between cards: up/down within a column, left/right to the neighbouring column, Home/End to the column's first/last card. The choice is kept per viewer in the browser (`#view=kanban` in the URL opens it directly), and the dependency graph shows in both views.
 
 The page draws the graph as plain SVG from geometry the CLI computes. Every publish runs ELK's layered algorithm (left to right, orthogonal edges, one box per wave when there are several) and stores the result as `layout` in the published document beside the board, so the page does no layout of its own. If elkjs is missing the CLI warns and publishes without `layout`, and the page falls back to a simple built-in layering; it does the same if the stored layout no longer matches the board's deps.
 

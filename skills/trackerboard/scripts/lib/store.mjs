@@ -260,8 +260,10 @@ export function loadBoard(name, options = {}) {
   if (!boardExists(checked)) throw new BoardError(`board "${checked}" not found; boards: ${listBoards().join(", ") || "(none)"}`);
   const board = backendFor(checked).load();
   if (board?.repoUrl) board.repoUrl = sanitizeRepositoryUrl(board.repoUrl);
-  migrateStatuses(board);
+  // Snapshot the stored spelling first, so the next write sees the migration
+  // as a change and persists it.
   const snapshot = structuredClone(board);
+  migrateStatuses(board);
   boardSnapshots.set(board, snapshot);
   latestSnapshots.set(checked, snapshot);
   return board;

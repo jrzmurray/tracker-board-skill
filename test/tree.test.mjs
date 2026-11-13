@@ -71,14 +71,30 @@ test("owner without --session records the calling agent session from the environ
   run(["create", "b", "--no-bind"]);
   run(["insert", "--board", "b", "--phase", "P1"]);
   const sessionOf = () => JSON.parse(run(["show", "--board", "b", "--json"]).stdout).waves[0].phases[0].session;
-  run(["update", "--board", "b", "--phase", "P1", "--owner", "me"]);
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "claude"]);
   assert.equal(sessionOf(), "", "no session in the environment: nothing recorded");
-  run(["update", "--board", "b", "--phase", "P1", "--owner", "me"], { CLAUDE_CODE_SESSION_ID: "abc-123" });
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "claude"], { CLAUDE_CODE_SESSION_ID: "abc-123" });
   assert.equal(sessionOf(), "claude:abc-123");
-  run(["update", "--board", "b", "--phase", "P1", "--owner", "me"], { CLAUDE_CODE_SESSION_ID: "abc-123", TRACKERBOARD_SESSION_URL: "https://example.com/s/{id}" });
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "claude"], { CLAUDE_CODE_SESSION_ID: "abc-123", TRACKERBOARD_SESSION_URL: "https://example.com/s/{id}" });
   assert.equal(sessionOf(), "https://example.com/s/abc-123");
-  run(["update", "--board", "b", "--phase", "P1", "--owner", "me", "--session", "https://x.test/1"], { CLAUDE_CODE_SESSION_ID: "other" });
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "claude", "--session", "https://x.test/1"], { CLAUDE_CODE_SESSION_ID: "other" });
   assert.equal(sessionOf(), "https://x.test/1", "an explicit --session wins");
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "codex"], { CLAUDE_CODE_SESSION_ID: "abc-123" });
+  assert.equal(sessionOf(), "", "assigning to another agent never records the caller's session, and drops a stale one");
+  run(["update", "--board", "b", "--phase", "P1", "--owner", "claude"], { CLAUDE_CODE_SESSION_ID: "abc-123" });
   run(["update", "--board", "b", "--phase", "P1", "--owner", ""]);
   assert.equal(sessionOf(), "", "clearing the owner clears the session");
+});
+
+test("a middle board's own phases are milestones: only its children count", () => {
+  const { run } = sandbox();
+  run(["create", "top", "--no-bind"]);
+  run(["create", "mid", "--no-bind", "--parent", "top"]);
+  run(["create", "leaf", "--no-bind", "--parent", "mid"]);
+  run(["insert", "--board", "mid", "--phase", "M1", "--status", "done"]);
+  run(["insert", "--board", "leaf", "--phase", "L1", "--status", "done"]);
+  run(["insert", "--board", "leaf", "--phase", "L2", "--status", "active"]);
+  const out = run(["tree", "--all"]).stdout;
+  assert.match(out, /^ {2}mid +1\/2 done/m);
+  assert.match(out, /^top +1\/2 done/m);
 });

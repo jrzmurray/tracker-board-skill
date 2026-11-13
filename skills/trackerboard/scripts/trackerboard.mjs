@@ -8,7 +8,6 @@ import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
 import * as T from "./lib/tree.mjs";
 import { detectSession } from "./lib/session.mjs";
-import { boardTree } from "./lib/tree.mjs";
 import { docBody, renderStandalone } from "./lib/render.mjs";
 import { createArtifactCommands } from "./commands/artifact.mjs";
 import { createBackendCommands } from "./commands/backend.mjs";
@@ -126,6 +125,16 @@ function readValue(v) {
   if (v === "-") return fs.readFileSync(0, "utf8").replace(/\n$/, "");
   if (v.startsWith("@") && v.length > 1 && fs.existsSync(v.slice(1))) return fs.readFileSync(v.slice(1), "utf8").replace(/\n$/, "");
   return v;
+}
+
+// The session to record for an owner: the caller's own, but only when the
+// owner is the caller (or the session was set explicitly). Assigning work to
+// another agent must not link to this agent's session, and "" clears a stale one.
+function sessionFor(owner) {
+  const session = detectSession();
+  if (!session) return "";
+  if (process.env.TRACKERBOARD_SESSION) return session;
+  return process.env.CLAUDE_CODE_SESSION_ID && String(owner).trim().toLowerCase() === "claude" ? session : "";
 }
 
 function take(opts, names) {
@@ -257,8 +266,8 @@ const commands = {
     }
     const waveId = opts.wave; delete opts.wave;
     const fields = take(opts, B.PHASE_FIELDS);
-    if (fields.owner && fields.session == null) fields.session = detectSession() || undefined;
-    if (fields.session === undefined) delete fields.session;
+    if (fields.owner && fields.session == null) fields.session = sessionFor(fields.owner);
+    if (!fields.session) delete fields.session;
     rejectLeftovers(opts, pos, used);
     const { wave, phase } = B.insertPhase(board, phaseId, fields, { wave: waveId });
     const i = wave.phases.indexOf(phase);
@@ -276,7 +285,7 @@ const commands = {
       const fields = take(opts, B.PHASE_FIELDS);
       // Taking over a phase records the caller's session; clearing the owner clears it too.
       if (fields.session == null && fields.owner === "") fields.session = "";
-      else if (fields.session == null && fields.owner) fields.session = detectSession() || undefined;
+      else if (fields.session == null && fields.owner) fields.session = sessionFor(fields.owner);
       if (fields.session === undefined) delete fields.session;
       rejectLeftovers(opts, pos, used);
       if (!Object.keys(fields).length && !Object.keys(extra).length) throw new B.BoardError("update needs at least one field");
@@ -364,7 +373,7 @@ const commands = {
     const name = boardName(opts);
     const file = opts.out || path.join(S.outDir(), `${name}.html`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name), { prStates: cachedPrStates(name), tree: boardTree(name) })));
+    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name), { prStates: cachedPrStates(name), tree: T.boardTree(name) })));
     out(`ok: wrote ${file}`);
   },
 };

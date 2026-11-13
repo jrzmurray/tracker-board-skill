@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Renders commands/<action>.md from scripts/commands.json so the 25 slash
+// Renders commands/<action>.md from scripts/commands.json so the slash
 // commands cannot drift. `node scripts/gen-commands.mjs` writes them;
 // `--check` exits 1 when a committed file differs from the table.
 import fs from "node:fs";

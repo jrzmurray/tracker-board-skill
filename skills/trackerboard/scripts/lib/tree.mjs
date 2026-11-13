@@ -17,7 +17,7 @@ export const totalOf = (counts) => Object.entries(counts).reduce((n, [s, c]) => 
 function loadAll() {
   const boards = new Map();
   for (const name of S.listBoards()) {
-    try { boards.set(name, S.loadBoard(name)); } catch { /* unreadable board: skip */ }
+    try { boards.set(name, S.loadBoard(name)); } catch (error) { process.stderr.write(`warning: skipped unreadable board "${name}": ${error.message}\n`); }
   }
   return boards;
 }
@@ -26,9 +26,9 @@ function childrenOf(boards, name) {
   return [...boards.values()].filter((b) => b.parent === name && b.name !== name).sort((a, z) => a.name.localeCompare(z.name));
 }
 
-// A root board with children rolls up its children's phases (its own phases are
-// milestones that point at them). A non-root board counts its own phases plus
-// its children's; a leaf uses its own.
+// A board with children rolls up its children's phases (its own phases are
+// milestones that point at them, wherever it sits in the tree); a leaf uses
+// its own.
 function rollup(boards, name, seen = new Set()) {
   const board = boards.get(name);
   const counts = blank();
@@ -36,7 +36,7 @@ function rollup(boards, name, seen = new Set()) {
   seen.add(name);
   const kids = childrenOf(boards, name);
   const parts = kids.map((k) => rollup(boards, k.name, seen));
-  if (!kids.length || board.parent) parts.push(ownCounts(board));
+  if (!kids.length) parts.push(ownCounts(board));
   for (const part of parts) for (const [s, c] of Object.entries(part)) counts[s] = (counts[s] || 0) + c;
   return counts;
 }

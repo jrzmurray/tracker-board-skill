@@ -13,8 +13,8 @@ const COMMANDS = path.join(ROOT, "commands");
 // means adding its command file here with its own argument-hint.
 const ACTIONS = [
   "backend", "bind", "boards", "check", "create", "delete", "dep", "github", "import", "insert", "link", "log",
-  "migrate", "page", "pull", "push", "refresh", "refresh-prs", "remove", "render", "serve", "show", "synced",
-  "unbind", "update",
+  "migrate", "page", "pull", "push", "refresh", "refresh-prs", "remove", "render", "sdoc", "serve", "show", "synced",
+  "tree", "unbind", "update",
 ];
 
 test("the plugin manifest names the plugin trackerboard", () => {

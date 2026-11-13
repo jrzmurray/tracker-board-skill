@@ -70,6 +70,13 @@ export function createArtifactCommands({ boardName, out }) {
     }
   }
 
+  // The roll-up in the published document depends on other boards, so a child
+  // changing makes this board's page stale even when its own content is the same.
+  const treeDigest = (tree) => sha256(JSON.stringify(tree ?? null));
+  function unpublished(name, board, saved) {
+    return !saved || !sameContent(board, saved) || treeDigest(boardTree(name)) !== (S.loadLocal(name).treeSha ?? treeDigest(null));
+  }
+
   async function writeDoc(board, prStates) {
     const body = JSON.stringify(await docBody(board, { prStates, tree: boardTree(board.name) }));
     if (Buffer.byteLength(body) > DOC_LIMIT) {
@@ -193,18 +200,20 @@ export function createArtifactCommands({ boardName, out }) {
       // sent (--doc), or the local board if it was not named.
       const sent = opts.doc ? JSON.parse(fs.readFileSync(opts.doc, "utf8")) : S.loadBoard(name);
       if (sent.name !== name) throw new B.BoardError(`document is board "${sent.name}", not "${name}"`);
+      const sentTree = opts.doc ? sent.tree : boardTree(name);
       delete sent.layout;
       delete sent.prStates;
       delete sent.tree;
       S.saveBase(name, sent);
       const local = S.loadLocal(name);
       local.artifactVersion = version;
+      local.treeSha = treeDigest(sentTree);
       local.checkedAt = new Date().toISOString();
       if (opts.doc) { local.stateSha = sha256(fs.readFileSync(opts.doc)); local.pushedAt = local.checkedAt; }
       S.saveLocal(name, local);
       pruneDocs(name, opts.doc);
       out(`ok: ${name} artifact version ${version}`);
-      if (opts.doc && !sameContent(S.loadBoard(name), sent)) {
+      if (opts.doc && (!sameContent(S.loadBoard(name), sent) || treeDigest(boardTree(name)) !== local.treeSha)) {
         out("edits were made after that snapshot and are not published yet:");
         await pushInstruction(S.loadBoard(name));
       }
@@ -243,7 +252,7 @@ export function createArtifactCommands({ boardName, out }) {
       out(`ok: ${name} ${same ? "is current" : "will overwrite the published board on the next push"} (version ${version})`);
       if (none) out(`note: the artifact has no ${DOC_FILE} (a legacy page). Run \`trackerboard page\` to publish the new page together with it.`);
       const saved = S.loadBase(name);
-      if (opts.overwrite || !saved || !sameContent(S.loadBoard(name), saved)) {
+      if (opts.overwrite || unpublished(name, S.loadBoard(name), saved)) {
         out("local changes are not published yet:");
         await pushInstruction(S.loadBoard(name));
       }
@@ -276,7 +285,7 @@ export function createArtifactCommands({ boardName, out }) {
         fs.rmSync(remoteFile(name), { force: true });
         out(`ok: ${name} is current at artifact version ${version}`);
         const saved = S.loadBase(name);
-        if (!saved || !sameContent(board, saved)) {
+        if (unpublished(name, board, saved)) {
           out("local changes are not published yet:");
           await pushInstruction(board);
         }

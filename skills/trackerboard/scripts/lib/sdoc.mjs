@@ -8,7 +8,7 @@
 // group value (nested for several --group-by fields), requirements as phases.
 import fs from "node:fs";
 import path from "node:path";
-import { BoardError } from "./board.mjs";
+import { BoardError, STATUS_ALIASES } from "./board.mjs";
 
 const HEADER = /^\[(\[)?(\/)?([A-Z_]+)\]\]?\s*(.*)$/;
 const FIELD = /^([A-Z][A-Z0-9_]*):\s?(.*)$/;
@@ -98,7 +98,9 @@ export function readSdoc(paths) {
 
 const slug = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "x";
 
+// The board status vocabulary and its aliases, plus StrictDoc's lifecycle words.
 const DEFAULT_STATUS = {
+  ...STATUS_ALIASES,
   planned: "planned", planning: "planning", in_progress: "active", active: "active", partial: "active",
   done: "done", dropped: "dropped",
   // StrictDoc's usual lifecycle words
@@ -183,7 +185,21 @@ export function sdocBoards(docs, opts) {
     if (!boards.has(name)) boards.set(name, { schema: 1, name, repoUrl: opts.repoUrl || "", subtitle: opts.subtitle || "", waves: [], ...init });
     return boards.get(name);
   };
-  const nameFor = (segments) => [root, ...segments.map(slug)].join("-");
+  // Distinct groups whose slugs collide ("Auth Flow" vs "auth-flow") get a
+  // numeric suffix, so one never overwrites the other's board.
+  const names = new Map(); // path key -> board name
+  const taken = new Set();
+  const nameFor = (segments) => {
+    const key = segments.join("\u0000");
+    if (!names.has(key)) {
+      const base = [root, ...segments.map(slug)].join("-");
+      let name = base;
+      for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+      taken.add(name);
+      names.set(key, name);
+    }
+    return names.get(key);
+  };
   const phaseOf = (it, onBoard) => {
     const f = it.el.fields;
     const statement = unescapeRst(f.STATEMENT || "");

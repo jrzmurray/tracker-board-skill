@@ -131,3 +131,12 @@ wrapped statement.
   assert.equal(p.title, "Use \\[x:*\\] and a\\b and snake_");
   assert.equal(p.req, "Use [x:*] and a\\b and snake_ in a long wrapped statement.");
 });
+
+test("groups whose slugs collide get their own boards instead of overwriting each other", () => {
+  const el = (uid, leg) => `[REQUIREMENT]\nUID: ${uid}\nSTATUS: planned\nSTATEMENT: >>>\ns ${uid}\n<<<\nLEG: ${leg}\n\n`;
+  const boards = sdocBoards([parseSdoc(el("U-1", "Auth Flow") + el("U-2", "auth-flow"), "c.sdoc")], { root: "r", groupBy: ["LEG"] });
+  const leaves = boards.filter((b) => b.name !== "r");
+  assert.equal(leaves.length, 2);
+  assert.deepEqual(leaves.map((b) => b.waves[0].phases.length), [1, 1]);
+  assert.equal(new Set(leaves.map((b) => b.name)).size, 2);
+});

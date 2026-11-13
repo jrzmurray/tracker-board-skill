@@ -10,7 +10,7 @@ export const STATUSES = [
   "planning", "planned", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped",
 ];
 
-const STATUS_ALIASES = {
+export const STATUS_ALIASES = {
   "todo": "planned", "not-started": "planned", "not_started": "planned", "pending": "planned",
   "plan": "planning", "drafting": "planning",
   "in-progress": "active", "in_progress": "active", "running": "active", "wip": "active",

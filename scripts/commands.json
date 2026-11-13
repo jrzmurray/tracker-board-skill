@@ -26,7 +26,7 @@
   {
     "action": "create",
     "description": "Create a board and bind it to this repo",
-    "hint": "<name> [--title T] [--repo-url URL] [--branch] [--no-bind]",
+    "hint": "<name> [--title T] [--repo-url URL] [--parent BOARD] [--branch] [--no-bind]",
     "note": ""
   },
   {
@@ -162,7 +162,7 @@
   {
     "action": "update",
     "description": "Change a phase, a wave or the board's own fields",
-    "hint": "--phase P [--status S] [--owner O] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T]",
+    "hint": "--phase P [--status S] [--owner O] [--session S] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T] [--parent BOARD]",
     "note": ""
   }
 ]

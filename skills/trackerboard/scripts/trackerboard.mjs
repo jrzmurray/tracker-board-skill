@@ -49,7 +49,7 @@ Write (--board is optional when exactly one board resolves from the cwd)
 Phase fields
   --title --lane --owner --session --status --note --req --issue --pr --review --notes --deps A,B
   --issue: the GitHub issue (#1234, or a bare number).
-  --owner: who is working the phase (agent id or person); "" clears it.
+  --owner: who is working the phase (agent id or person); "" clears it. "claude" also records this Claude session.
   --session: link (https URL) or id of that agent's session; the owner mark on the page links to it.
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.

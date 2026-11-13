@@ -56,6 +56,7 @@ trackerboard <command> [options]
                                    On the default JSON backend, this is local; nothing is published until `page` and `link`.
       --title T                      Display title (any text; quote it if it has spaces).
       --repo-url URL                 GitHub repo URL; links bare #1234 references to PRs and issues.
+      --parent BOARD                 Nest this board under another (a roll-up parent); `update --parent` changes it later.
       --branch                       Bind to the current branch only, not the whole repo.
       --no-bind                      Create the board without binding it to this directory.
     boards                         List boards; marks the one this directory resolves to.
@@ -101,6 +102,7 @@ trackerboard <command> [options]
       --rename W2                    Rename the wave.
     update                         Change board fields.
       --title --subtitle --lede --notes --repo-url
+      --parent BOARD                 Move under another board; "" makes it a root. Cycles are refused.
     delete <P>                     Delete a phase; it is removed from other phases' deps.
       --wave W                       Disambiguate when the id exists in more than one wave.
     delete --wave W                Delete a wave.
@@ -300,5 +302,5 @@ npm test
 
 - Boards nest: `trackerboard create <name> --parent <board>` (or `update --parent B`, `--parent ""` clears). A repo board holds sprint boards, which hold lane/agent boards. Progress rolls up from leaf phase counts; `dropped` phases are excluded from every total. A board with children is a roll-up: its own phases act as milestones. `trackerboard tree [--board B | --all]` prints the outline.
 - Pages show breadcrumbs to ancestors and, on a parent, a Boards panel with a progress meter per child linking to its page (the linked artifact if there is one, else `<name>.page.html` beside it).
-- `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
+- `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner claude` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; any other owner records no session (and drops a stale one), because the caller's session is not that agent's; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
 - `planning` (plan being written) and `planned` (approved, not started) replace `todo`; stored `todo`/`not-started`/`pending` migrate to `planned` on load.

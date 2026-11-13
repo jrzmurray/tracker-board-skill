@@ -18,7 +18,7 @@ Run the CLI as `trackerboard …` if it is on PATH, otherwise `node <this skill'
 
 ```
 trackerboard create <name> --title "…" [--repo-url https://github.com/org/repo] [--branch] [--no-bind]
-trackerboard insert --phase P0.1 [--wave W] --title "…" --status todo --deps P0
+trackerboard insert --phase P0.1 [--wave W] --title "…" --status planned --deps P0
 trackerboard update --phase P0.1 --status done --pr "#2933" --note "merged 951de27" --log "P0.1 merged"
 trackerboard delete [--wave W] P0.1
 trackerboard insert --wave B --title "Wave B" --prefix B-        # waves: insert/update/delete without --phase
@@ -31,7 +31,7 @@ trackerboard log "JR ruled the EXCLUDED sites"
   - Everywhere (titles, `--note`, log messages, PR and issue cells, the expandable fields): inline markdown — `` `code` `` (use ``` `` a`b `` ``` when the code holds a backtick), `**bold**`, `*italic*`, `[text](url)`, `https://` URLs (autolinked) and bare `#1234` (linked to the board's `--repo-url`: PRs in the PR column and elsewhere, issues in the Issue column). Put identifiers, commands, file paths, env vars and flags in backticks so they render as code.
   - In `--req`, `--review`, `--notes`, wave and board notes and the lede, also block markdown: paragraphs, headings, `- ` and `1.` lists, `>` quotes, tables and fenced code blocks for multi-line commands or output. A single newline is a line break.
   - HTML `<code>…</code>` and `<strong>…</strong>` are converted to backticks and `**` when written; any other HTML shows as literal text.
-- Status: `todo active review waiting blocked done ongoing external dropped` (aliases such as `merged`, `in-progress`, `not-started`, `n/a` are accepted).
+- Status: `planning planned active review waiting blocked done ongoing external dropped` (aliases such as `merged`, `in-progress`, `not-started`, `n/a` are accepted).
 - Long values: `--req @file.md` reads a file; `--notes -` reads stdin.
 - `--wave` is optional. A new phase goes to the wave of its parent id (`P0.1` → `P0`'s wave), else the wave whose `--prefix` matches, else the wave holding the same id stem, else the only wave.
 - Position comes from the id: `P0.1` / `P0-1` lands right after `P0` (and after lower siblings like `P0.0`) even if `P1` exists. Insert never overwrites; it fails if the id exists anywhere on the board.
@@ -71,7 +71,7 @@ Use `gh >= 2.96.0`, Project read/write permission, and the OAuth `project` scope
 
 The Project fields are Trackerboard ID, Status (the nine phase statuses), Wave, Lane, Owner, and Order; draft-item title is the phase title. The versioned item-body block stores phase note, req, issue, pr, review, notes, and deps. A versioned Project README metadata block stores board fields, ordered wave metadata, the recent log, stable board ID, and the phase/item mapping. The README metadata block and each item-body block have independent 60 KiB limits. Oversized writes fail; text is never truncated.
 
-`serve` exposes an editable local browser view over the active backend. It binds only to `127.0.0.1`, uses a random per-run capability URL and requires a bearer token plus same-origin validation for writes. It sends validated board operations, not a whole-board replacement. JSON/SQLite changes appear on the next two-second poll; GitHub state is cached for up to 60 seconds. `refresh-prs` refreshes derived PR badges with a 60-second cache: Draft=todo color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. PR lifecycle badges are independent of phase status; a merge updates the badge but never the human-controlled phase status. Green means merged only.
+`serve` exposes an editable local browser view over the active backend. It binds only to `127.0.0.1`, uses a random per-run capability URL and requires a bearer token plus same-origin validation for writes. It sends validated board operations, not a whole-board replacement. JSON/SQLite changes appear on the next two-second poll; GitHub state is cached for up to 60 seconds. `refresh-prs` refreshes derived PR badges with a 60-second cache: Draft=planned color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. PR lifecycle badges are independent of phase status; a merge updates the badge but never the human-controlled phase status. Green means merged only.
 
 ## Publishing
 
@@ -105,3 +105,11 @@ Narrow any of these with `--wave W`, `--lane L`, `--status S[,S]` and `--owner O
 - `--pr-list`: id, status and PR for each phase that has one.
 
 For example, `show --lane B --status blocked --ids` or `show --lane A --pr-list`. `dep list X`, `dep ready` and `dep graph` (mermaid) cover the graph. Prefer these over opening the artifact.
+
+## Hierarchy and sessions
+
+- Boards nest: `trackerboard create <name> --parent <board>` (or `update --parent B`, `--parent ""` clears). A repo board holds sprint boards, which hold lane/agent boards. Progress rolls up from leaf phase counts; `dropped` phases are excluded from every total. A board with children is a roll-up: its own phases act as milestones. `trackerboard tree [--board B | --all]` prints the outline.
+- Pages show breadcrumbs to ancestors and, on a parent, a Boards panel with a progress meter per child linking to its page (the linked artifact if there is one, else `<name>.page.html` beside it).
+- `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner claude` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; any other owner records no session (and drops a stale one), because the caller's session is not that agent's; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
+- `planning` (plan being written) and `planned` (approved, not started) replace `todo`; stored `todo`/`not-started`/`pending` migrate to `planned` on load.
+- `trackerboard sdoc PATH... --root NAME --out DIR [--group-by document,domain,section,FIELD] [--status-map in_progress=active,...]` turns StrictDoc (`.sdoc`) requirement files into a board hierarchy (JSON, one file per board): the root board's milestones are the first group-by level, each group is a board that rolls up, UIDs are phases, `Parent` relations are dependencies (a dependency on another board is listed in the phase notes), other fields land in the phase notes. Import the files root first. `--group-by` takes `document` (the .sdoc title), `domain` (the middle part of `R-ADM-001`), `section`, or any field name such as `LEG`.

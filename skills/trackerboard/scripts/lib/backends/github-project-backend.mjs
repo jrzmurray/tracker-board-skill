@@ -143,7 +143,7 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
     const managed = managedItems(snapshot);
     const declared = Array.isArray(metadata.phaseIds) ? metadata.phaseIds.map(String) : Object.keys(metadata.phaseItems || {});
     const waves = (metadata.waves || []).map((wave) => ({ id: String(wave.id), title: String(wave.title || ""), prefix: String(wave.prefix || ""), notes: String(wave.notes || ""), phases: [] }));
-    const fields = Object.fromEntries(["title", "subtitle", "lede", "notes", "repoUrl"].map((key) => [key, String(metadata.fields?.[key] || "")]));
+    const fields = Object.fromEntries(["title", "subtitle", "lede", "notes", "repoUrl", "parent"].map((key) => [key, String(metadata.fields?.[key] || "")]));
     const locations = metadata.phaseLocations || {};
     const itemMaps = { ...(metadata.phaseItems || {}) };
     const byItemId = new Map(snapshot.items.map((item) => [itemId(item), item]));
@@ -174,7 +174,8 @@ export function createGitHubProjectBackend(context, client = createGitHubClient(
         title: bodyData?.emptyTitle ? "" : itemTitle(item),
         lane: String((fieldMap.Lane && valueOf(item, fieldMap.Lane)) || ""),
         owner: String((fieldMap.Owner && valueOf(item, fieldMap.Owner)) || ""),
-        status: String(rawStatus || "todo").toLowerCase(),
+        status: String(rawStatus || "planned").toLowerCase(),
+        session: String(details.session || ""),
         note: String(details.note || ""),
         req: String(details.req || ""),
         issue: String(details.issue || ""),

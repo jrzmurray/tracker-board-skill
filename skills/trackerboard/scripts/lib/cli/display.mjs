@@ -7,7 +7,7 @@ const short = (value, limit = 70) => {
 };
 
 function showPhase(out, wave, phase) {
-  out(`${phase.id}  [${phase.status}]  wave ${wave.id}${phase.lane ? `  lane ${phase.lane}` : ""}${phase.owner ? `  owner ${phase.owner}` : ""}`);
+  out(`${phase.id}  [${phase.status}]  wave ${wave.id}${phase.lane ? `  lane ${phase.lane}` : ""}${phase.owner ? `  owner ${phase.owner}` : ""}${phase.session ? `  session ${phase.session}` : ""}`);
   for (const field of ["title", "note", "deps", "issue", "pr", "review", "req", "notes"]) {
     const value = field === "deps" ? phase.deps.join(", ") : phase[field];
     if (value) out(`  ${field}: ${value}`);

@@ -26,7 +26,7 @@
   {
     "action": "create",
     "description": "Create a board and bind it to this repo",
-    "hint": "<name> [--title T] [--repo-url URL] [--branch] [--no-bind]",
+    "hint": "<name> [--title T] [--repo-url URL] [--parent BOARD] [--branch] [--no-bind]",
     "note": ""
   },
   {
@@ -99,16 +99,16 @@
     "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data."
   },
   {
-    "action": "refresh-prs",
-    "description": "Refresh derived PR lifecycle badges",
-    "hint": "[--repo OWNER/NAME] [--limit N]",
-    "note": ""
-  },
-  {
     "action": "refresh",
     "description": "Print the list_files call that checks the published board",
     "hint": "[--board B]",
     "note": "This prints claude-artifacts tool calls (list_files, publish_files, read_file); make them exactly as printed, then run the follow-up line it prints. Never read or summarize the board data."
+  },
+  {
+    "action": "refresh-prs",
+    "description": "Refresh derived PR lifecycle badges",
+    "hint": "[--repo OWNER/NAME] [--limit N]",
+    "note": ""
   },
   {
     "action": "remove",
@@ -122,6 +122,12 @@
     "description": "Write a static HTML snapshot of the board for local preview",
     "hint": "[--out FILE]",
     "note": ""
+  },
+  {
+    "action": "sdoc",
+    "description": "Convert StrictDoc .sdoc files into a board hierarchy (JSON)",
+    "hint": "PATH... --root NAME --out DIR [--group-by document,section] [--status-map in_progress=active]",
+    "note": "This writes board JSON files under --out; import each one afterwards, root first."
   },
   {
     "action": "serve",
@@ -142,6 +148,12 @@
     "note": ""
   },
   {
+    "action": "tree",
+    "description": "Outline the board hierarchy with rolled-up progress",
+    "hint": "[--board B]",
+    "note": ""
+  },
+  {
     "action": "unbind",
     "description": "Remove this directory's board binding",
     "hint": "[--board B] [--all]",
@@ -150,7 +162,7 @@
   {
     "action": "update",
     "description": "Change a phase, a wave or the board's own fields",
-    "hint": "--phase P [--status S] [--owner O] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T]",
+    "hint": "--phase P [--status S] [--owner O] [--session S] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T] [--parent BOARD]",
     "note": ""
   }
 ]

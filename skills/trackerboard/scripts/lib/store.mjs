@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { BoardError, newBoard, validate } from "./board.mjs";
+import { BoardError, migrateStatuses, newBoard, validate } from "./board.mjs";
 import { dataHome, resolveConfig } from "./config.mjs";
 import { initializeBackendFactories, openBackend } from "./backend.mjs";
 import { canonicalizeBinding, normalizeRepositoryUrl, resolveStorageTarget, sanitizeRepositoryUrl } from "./backend-target.mjs";
@@ -260,7 +260,10 @@ export function loadBoard(name, options = {}) {
   if (!boardExists(checked)) throw new BoardError(`board "${checked}" not found; boards: ${listBoards().join(", ") || "(none)"}`);
   const board = backendFor(checked).load();
   if (board?.repoUrl) board.repoUrl = sanitizeRepositoryUrl(board.repoUrl);
+  // Snapshot the stored spelling first, so the next write sees the migration
+  // as a change and persists it.
   const snapshot = structuredClone(board);
+  migrateStatuses(board);
   boardSnapshots.set(board, snapshot);
   latestSnapshots.set(checked, snapshot);
   return board;

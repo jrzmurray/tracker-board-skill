@@ -85,7 +85,7 @@ export function prLifecycle(pr) {
   if (["DIRTY", "CONFLICTING"].includes(String(pr.mergeStateStatus || "").toUpperCase())) {
     return { status: "blocked", label: "Conflicting" };
   }
-  if (pr.isDraft) return { status: "todo", label: "Draft" };
+  if (pr.isDraft) return { status: "planned", label: "Draft" };
   return { status: "active", label: "Open" };
 }
 

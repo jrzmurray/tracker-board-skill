@@ -128,14 +128,14 @@ test("maps all board fields, waves, logs, statuses, and phase details through Pr
   assert.equal(metadata.version, 1);
   assert.equal(metadata.bootstrapComplete, true);
   assert.ok(metadata.boardId);
-  assert.deepEqual(metadata.fields, { title: board.title, subtitle: board.subtitle, lede: board.lede, notes: board.notes, repoUrl: board.repoUrl });
+  assert.deepEqual(metadata.fields, { title: board.title, subtitle: board.subtitle, lede: board.lede, notes: board.notes, repoUrl: board.repoUrl, parent: board.parent });
   assert.deepEqual(metadata.waves, [{ id: "W1", title: "Wave One", prefix: "P", notes: "Wave details" }]);
   assert.deepEqual(metadata.log, board.log);
   assert.equal(Object.keys(metadata.phaseItems).length, STATUSES.length);
   const status = project.fields.find((field) => field.name === "Status");
   assert.deepEqual(status.options.map((option) => option.name), STATUSES);
   assert.ok(status.options.every((option) => option.color && option.description));
-  assert.equal(status.options.find((option) => option.name === "todo").id, "DEFAULT-Todo");
+  assert.equal(status.options.find((option) => option.name === "planned").id, "DEFAULT-Todo");
   assert.deepEqual(project.fields.map((field) => field.name).sort(), ["Lane", "Order", "Owner", "Status", "Trackerboard ID", "Wave"].sort());
   assert.equal(project.items.length, STATUSES.length);
   assert.equal(mock.writes().some(({ args, input }) => args[0] === "api" && /createProjectV2Field/.test(JSON.parse(input).query)

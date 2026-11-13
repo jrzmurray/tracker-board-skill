@@ -10,7 +10,18 @@ Boards are edited with one CLI command per change. Use the optional Claude artif
 ./install.sh
 ```
 
-By default this installs the CLI at `~/.local/bin/trackerboard` and leaves Claude-specific setup out. To also link the optional Claude Code skill, run `./install.sh --claude-skill`. `TRACKERBOARD_BIN_DIR` selects a custom CLI directory. `CLAUDE_SKILLS_DIR` selects a custom skill directory and, for compatibility with existing installs, also opts into skill linking. The installer needs Node 20 or newer and installs [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
+By default this installs the CLI at `~/.local/bin/trackerboard` and leaves Claude-specific setup out. To also link the optional Claude Code skill, run `./install.sh --claude-skill`. `TRACKERBOARD_BIN_DIR` selects a custom CLI directory. `CLAUDE_SKILLS_DIR` selects a custom skill directory and, for compatibility with existing installs, also opts into skill linking. The installer needs Node 24 or newer and installs [elkjs](https://github.com/kieler/elkjs), the graph layout engine, and [markdown-it](https://github.com/markdown-it/markdown-it), which renders text fields. `page` and `render` inline markdown-it's browser build into the page, so the page needs no network access; raw HTML in board text is escaped, not rendered.
+
+### Claude Code plugin
+
+The repo is also a Claude Code plugin named `trackerboard`. It adds one slash command per CLI action, each with its own typeahead hint (for example `/trackerboard:update` suggests `--phase P [--status S] [--owner O] …`, and `/trackerboard:check` suggests `--version V --sha <sha256|none> [--overwrite]`), plus the `trackerboard` skill:
+
+```
+claude plugin marketplace add jrzmurray/tracker-board-skill
+claude plugin install trackerboard@tracker-board
+```
+
+To try it from a checkout without installing, run `claude --plugin-dir .` in the repo. `claude plugin validate .` checks the manifests and every command file. The commands run the CLI from the plugin (`${CLAUDE_PLUGIN_ROOT}`), pre-approving only that script, and `delete`, `remove`, `migrate` and `pull` can only be run by you, never by the model. A SessionStart hook installs the layout engine and markdown renderer once into the plugin's data directory and links them in, so nothing is lost when the plugin updates and you never run `npm install` yourself. Commands in `commands/` are generated: edit `scripts/commands.json` and run `node scripts/gen-commands.mjs` (CI checks it).
 
 ## Use
 
@@ -114,13 +125,14 @@ trackerboard <command> [options]
     --log "<text>"                 Also record the change in "Recent changes" (any write).
     @file                          As a field value: read it from a file; - reads stdin.
 
-  Publish (Claude-specific: these steps print Claude `Artifact` / `ArtifactData` tool calls)
+  Publish (Claude-specific: these steps print Claude `publish_files` / `list_files` / `read_file` tool calls)
     page                           Write the publishable page and print the first-publish steps.
     link --url URL                 Record the board's artifact URL.
-    push                           Write the db document and print the ArtifactData call.
-    synced --version N             Record the db version an ArtifactData write returned.
+    push                           Write the state.json document and print the publish_files call.
+    synced --version N             Record the artifact version a publish_files returned.
       --doc FILE                     The document that was written.
-    refresh                        Print the ArtifactData get that checks the published board.
+    refresh                        Print the list_files call that checks the published board.
+    check --version V --sha H [--overwrite]  Compare the live state.json hash with the last push.
     pull --version N               Merge the fetched document into the local board (no-op if current).
       --from FILE                    Read the fetched document from FILE.
       --theirs                       On conflict, keep the artifact's value.
@@ -150,7 +162,8 @@ trackerboard <command> [options]
   Environment
     TRACKERBOARD_BOARD             Board name to use when --board is omitted.
     TRACKERBOARD_HOME              Data directory (default: ~/.trackerboard).
-    TRACKERBOARD_FRESH_SECONDS     Seconds a refresh stays valid before writes are refused (default: 120).
+    TRACKERBOARD_FRESH_SECONDS     Seconds before a read of a linked board notes a stale check (default: 120). Writes are never refused.
+    TRACKERBOARD_PUBLISHER         1/0 forces whether publish steps are printed (default: on when CLAUDECODE is set).
     XDG_DATA_HOME                  Base directory for backend config (default: ~/.local/share).
     TRACKERBOARD_DATA_HOME          Backend config directory (default: ~/.local/share/trackerboard).
 ```
@@ -161,18 +174,19 @@ These commands are available in the CLI installed from this repository. Older st
 
 The core CLI does not contact Claude or claude.ai. The JSON backend reads and writes local files; the existing `trackerboard github` overlay uses the GitHub CLI (`gh`). Only the commands below need an agent that can call Claude's artifact tools.
 
-Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `Artifact` or `ArtifactData` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
+Publishing to a claude.ai artifact is done by an agent, not by the CLI. The commands below print `publish_files`, `list_files` or `read_file` tool calls (Claude Code / claude.ai tools) for the agent to make, then record the result:
 
 | Command | Claude-specific part |
 | --- | --- |
-| `page` | Prints the `Artifact` publish call that creates the page, with the `db` capability. |
+| `page` | Prints the `publish_files` call that creates the page (`index.html`, no board data) and `state.json`. |
 | `link --url URL` | Records the claude.ai artifact URL for the board. |
-| `push` | Prints the `ArtifactData set` call that writes the board to the artifact's database. |
-| `synced` | Records the db version that `ArtifactData` returned. |
-| `refresh` | Prints the `ArtifactData get` call that reads the published board from claude.ai. |
-| `pull` | Merges the document that `ArtifactData get` saved locally. |
+| `push` | Prints the `publish_files` call that uploads the board as `state.json` (from disk, so no tokens for the document). |
+| `synced` | Records the artifact version that `publish_files` returned. |
+| `refresh` | Prints the `list_files` call that reports the live version and the `state.json` sha256. |
+| `check` | Compares that sha256 with the one recorded at the last push; reads no board data. `--overwrite` accepts replacing another writer's change. |
+| `pull` | Merges the published `state.json` (read with `read_file` only when the version moved). |
 
-Once a board is linked, every write also prints a `publish:` step (an `ArtifactData set`), and writes are refused if the board has not been checked against the artifact within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`).
+Once a board is linked, every write by a Claude agent also prints a `publish:` step (a `publish_files`). Writes are never refused; the publish is, if anyone published since the recorded version. Other agents see `saved locally` and nothing else.
 
 Everything else (`create`, `bind`, `unbind`, `boards`, `remove`, `show`, `insert`, `update`, `delete`, `dep`, `log`, `import`, `github`, `refresh-prs`, `backend`, `migrate`, `serve`, `render`) works without Claude. An unlinked board has no refresh or publish steps; `render` writes a static HTML snapshot you can open anywhere. The artifact integration is optional. Migration to SQLite or GitHub Projects leaves the original artifact untouched and detached; it becomes a read-only snapshot and its refresh/pull/push workflow is no longer available.
 
@@ -206,7 +220,9 @@ trackerboard migrate --to json|sqlite|github [--dry-run]
 
 `backend` reports the resolved configuration and active backend; it does not switch storage. Configuration merges key-by-key from `~/.local/share/trackerboard/config.json`, `~/.local/share/trackerboard/repos/<bindingKey>.json`, and the board's `.local.json` override. `XDG_DATA_HOME` or `TRACKERBOARD_DATA_HOME` changes the first two paths; `TRACKERBOARD_HOME` changes board metadata paths. JSON remains the default.
 
-`migrate` first writes a mode-0600 recovery snapshot, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
+`migrate` first writes a mode-0600 recovery snapshot under `~/.trackerboard/recovery/`, then copies to the target backend, reads it back, validates it, and only then changes the active backend override. If the copy or verification fails, the original backend remains active. The original JSON file is preserved as an inactive recovery snapshot. Migrating back to JSON exports the current active board—it never restores stale JSON over newer data. A linked Claude artifact is left untouched and detached/read-only after a successful migration; `page`, `link`, `push`, `refresh`, `pull`, and `synced` are unavailable for that board. `render` remains available for a local static snapshot.
+
+Recovery copies and merge-base files remain available for manual recovery but are not active boards; `boards` and the shared `serve` index omit them. Older recovery snapshots in `boards/` are identified by their stored board name, so legitimate names ending in a recovery-like suffix remain discoverable. Merge bases now live under `bases/`; old `boards/<name>.base.json` files are read and moved safely, and are removed only when their stored board name matches the owning board. This keeps names ending in `.base` distinct from another board's merge base.
 
 ### GitHub Projects backend
 
@@ -218,11 +234,15 @@ Each phase maps its title to the draft-item title and has custom fields for Trac
 
 GitHub Project writes use reread-and-reconcile best effort because the API does not provide a multi-item transaction or compare-and-swap token. Observed same-field conflicts are rejected, but a race after the last read remains best-effort last-write-wins. Bootstrap and retries reconcile by stable board, phase, and Project item IDs. Coordinate writes to a shared board and inspect it after concurrent changes. Phases are Project draft items only; Trackerboard does not create or close repository Issues, and an `--issue` field only references an existing Issue.
 
+When GitHub returns a new draft item's ID before its Project item listing reflects it, Trackerboard persists the ID in Project metadata and reads the item directly by ID. If the `gh project item-create` response is lost before that ID can be saved, inspect the private Project before retrying; a reported GitHub Projects forward-index inconsistency can leave an item retrievable by ID but absent from the Project's item list and views. See the [GitHub report](https://github.com/orgs/community/discussions/208677).
+
 ### Local editor and PR badges
 
 `trackerboard serve [--board NAME] [--port N]` serves an editable browser view over the active backend. It binds only to `127.0.0.1`; the printed URL contains a random per-run capability. Writes also require the matching bearer capability and same-origin request. The editor uses validated board operations rather than accepting a replacement board document. Local JSON and SQLite changes appear on the next two-second poll; GitHub Project state is cached for up to 60 seconds. You can open the printed URL in a browser panel beside the chat, but no Codex-specific integration is required.
 
 `trackerboard refresh-prs` refreshes a derived cache of PR lifecycle badges, with a 60-second TTL. A badge reports the linked PR's state independently from the phase's human-controlled `status`: Draft is planned-colored, Open is active-colored, Conflicting is blocked/red, Merged is done/green, and Closed-unmerged is dropped/gray. Only merged PRs are green. Merging a PR does not change phase status. The `trackerboard github` overlay only adds PR and Issue references; it does not advance phase status.
+
+The CLI starts or reuses one local service for all discovered boards. Use `trackerboard serve --board NAME` to print a selected board's URL; without a selected board it still starts the shared service and prints the protected index URL. See [skills/trackerboard/AGENTS.md](skills/trackerboard/AGENTS.md) for commands and lifecycle details, and [docs/shared-server-plan.md](docs/shared-server-plan.md) for the design decisions and acceptance criteria.
 
 ## Data model
 
@@ -242,9 +262,10 @@ Files live in `~/.trackerboard` (override with `TRACKERBOARD_HOME`):
 | --- | --- |
 | `boards/<name>.json` | the board |
 | `boards/<name>.local.json` | this machine's bindings, backend override, artifact URL/version and local backend metadata |
-| `boards/<name>.base.json` | the published document as of the recorded db version (the merge base for `pull`) |
-| `remote/<name>/` | where `refresh` has `ArtifactData get` save the published document |
-| `out/docs/<name>-<hash>.json` | the db document written on each change, one file per snapshot |
+| `bases/<name>.json` | the published document as of the recorded artifact version (the merge base for `pull`) |
+| `recovery/<name>-<timestamp>.json` | mode-0600 pre-migration recovery copies; not active boards |
+| `remote/<name>/` | where `pull` expects `state.json` copied after a `read_file` |
+| `out/docs/<name>-<hash>.json` | the `state.json` document written on each change, one file per snapshot |
 | `out/<name>.page.html` | the publishable page |
 
 Backend configuration is separate from the board files and normally lives under `~/.local/share/trackerboard` (or the root selected by `XDG_DATA_HOME` / `TRACKERBOARD_DATA_HOME`).

@@ -7,7 +7,7 @@ Run `trackerboard` if it is on `PATH`; otherwise run `node <trackerboard install
 ## Rules
 
 - Start with `trackerboard show`. It lists phase status, owner, dependencies, and phases whose dependencies are all done. Use `show --phase X` for one phase in full. `show --json` is the machine-readable view.
-- Use the active backend as the source of truth. JSON is the default; SQLite and GitHub Projects are explicit opt-ins. A linked Claude artifact is optional; only then run `trackerboard refresh` and follow its steps before writing. Writes to a linked artifact are refused if it has not been checked in the last two minutes. Migrating to another backend detaches the artifact without changing it.
+- Use the active backend as the source of truth. JSON is the default; SQLite and GitHub Projects are explicit opt-ins. A linked Claude artifact is optional and is a Claude-harness concern. If you are not a Claude agent, ignore it: edit the board normally. Edits always apply locally and print `saved locally`; you never need to refresh or publish, and you cannot overwrite anyone's work. A Claude agent publishes later, and its publish is refused (never overwritten) if the published board changed in between. Migrating to another backend detaches the artifact without changing it.
 - When you start a phase: `trackerboard update --phase X --status active --owner <your agent id>`.
 - When a PR opens or is reviewed, update `--status`, `--pr` and `--note` as appropriate. PR lifecycle badges are independent of phase status: merging a PR changes its badge, not the human-controlled phase `--status`.
 - When you hand a phase off or finish it, clear the owner with `--owner ""`.
@@ -57,7 +57,8 @@ Backend configuration is machine-local. Config is merged key-by-key from global 
 ```text
 trackerboard backend [--json]
 trackerboard migrate --to json|sqlite|github [--dry-run]
-trackerboard serve [--board NAME] [--port N]
+trackerboard serve [--board NAME] [--port N] [--foreground]
+trackerboard serve status | stop
 trackerboard refresh-prs [--repo OWNER/NAME] [--limit N]
 ```
 
@@ -65,19 +66,23 @@ GitHub bootstrap makes the Project private and verifies visibility before adding
 
 GitHub concurrency is best effort: the adapter rereads and reconciles before narrow writes, but GitHub does not offer compare-and-swap for this data. Coordinate simultaneous writers and inspect the board after concurrent changes.
 
-`backend` reports resolved configuration and active storage; it does not switch storage. Global/repository backend settings select the default for new boards, and board creation pins that backend in local metadata. Changing those defaults does not move existing boards. A legacy JSON board without a backend pointer stays on JSON while its JSON file exists; use migration to select and verify another backend. Migration verifies a read-back before switching; on success it leaves the old JSON file as an inactive recovery snapshot. Migration back to JSON exports the current active board, not stale snapshot data. A timestamped mode-0600 recovery copy is kept for each migration attempt. Migration detaches a linked artifact without a separate detach command; the artifact remains untouched as a read-only snapshot, and page/link/push/refresh/pull/synced is unavailable after migration.
+After creating a draft item, Trackerboard persists the returned Project item ID and can read that item directly if GitHub's Project item listing lags. If `gh project item-create` loses its response before the ID is saved, inspect the private Project before retrying; GitHub has reported forward-index inconsistencies where an item is retrievable by ID but absent from Project lists and views.
 
-`trackerboard serve` provides an editable local browser view over the active backend. It binds only to `127.0.0.1`, prints a random per-run capability URL, and requires a bearer token plus same-origin validation for writes. It sends validated command operations, not whole-board replacements. JSON/SQLite changes appear on the next two-second poll; GitHub is cached for 60 seconds. `trackerboard refresh-prs` maintains derived PR badges: Draft=todo color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. A merge updates the badge but never the phase status; green means merged only.
+`backend` reports resolved configuration and active storage; it does not switch storage. Global/repository backend settings select the default for new boards, and board creation pins that backend in local metadata. Changing those defaults does not move existing boards. A legacy JSON board without a backend pointer stays on JSON while its JSON file exists; use migration to select and verify another backend. Migration verifies a read-back before switching; on success it leaves the old JSON file as an inactive recovery snapshot. Migration back to JSON exports the current active board, not stale snapshot data. A timestamped mode-0600 recovery copy is kept under `~/.trackerboard/recovery/` for each migration attempt, outside the active board namespace. Merge bases live under `~/.trackerboard/bases/`; the store reads legacy `boards/<name>.base.json` files by identity and moves them only when safe, so valid board names ending in `.base` are not overwritten or deleted by another board's artifact operations. Existing recovery snapshots in `boards/` are excluded by comparing their stored board name with the filename. Migration detaches a linked artifact without a separate detach command; the artifact remains untouched as a read-only snapshot, and page/link/push/refresh/pull/synced is unavailable after migration.
+
+Migration recovery copies and merge-base files stay available for manual recovery but are not active boards; `trackerboard boards` and the shared `serve` index omit them.
+
+`trackerboard serve` starts or reuses one detached local service for the current Trackerboard home and data home. It binds only to `127.0.0.1` and prints the protected all-boards index URL plus the selected board URL, if any. The index URL grants access to every listed board, so keep it private. Run `trackerboard serve status` to inspect the service and `trackerboard serve stop` to stop it; `--foreground` is available for debugging. After a reboot, run `serve` again to rediscover durable boards and receive fresh per-run URLs. Browser writes require the board capability and same-origin validation; they send validated command operations, not whole-board replacements. JSON/SQLite changes appear on the next two-second poll; GitHub is cached for 60 seconds. `trackerboard refresh-prs` maintains derived PR badges: Draft=todo color, Open=active, Conflicting=blocked/red, Merged=done/green, Closed-unmerged=dropped/gray. A merge updates the badge but never the phase status; green means merged only.
 
 ## Optional Claude artifact publishing
 
 The local CLI works without Claude. This section applies only to a board linked to a Claude artifact. Every write to such a board prints a `publish:` step and a `then:` step. Only the last write's steps matter. A board migrated to SQLite or GitHub Projects is detached; do not run this workflow for it.
 
 - **Claude (claude.ai artifact):**
-  - **Refresh:** `trackerboard refresh` prints an `ArtifactData get` call. Make it, then run the printed `trackerboard pull --version <version from the result>`. The pull does nothing if the board is current; otherwise it merges the published board with this machine's unpublished changes. If both sides changed the same field, it stops and lists the conflicts. Ask the user, then rerun with `--theirs` or `--ours`.
-  - **Publish:** make the printed `ArtifactData set` call exactly as given, then run the printed `trackerboard synced …` with the version from the result. The page updates live.
+  - **Refresh:** `trackerboard refresh` prints a `list_files` call. Make it, then run the printed `trackerboard check --version V --sha H` with the live version and the sha256 of `state.json` from the result. The agent never reads board data: `check` only compares that hash with the one recorded at the last push. If it matches, you are current. If not, another writer changed the board; the CLI stops and prints two choices: `check ... --overwrite` (your board replaces theirs on the next push) or, deliberately and at token cost, `read_file` plus `trackerboard pull` to merge. Ask the user which. Do not run `show` or read `state.json` unless asked.
+  - **Publish:** make the printed `publish_files` call (`mcp__claude-artifacts__publish_files`; it uploads `state.json` from disk, so no board data goes through you), then run the printed `trackerboard synced …` with the version from the result. Open pages pick the change up within 30 seconds.
   - **Version mismatch:** someone published in between. Refresh as above, then publish the step that `pull` prints. Nothing needs to be redone.
-- **Other harnesses:** nothing is linked, so there is no refresh or publish step. The active backend is the source of truth. The JSON backend coordinates agents on this machine with a lock. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.
+- **Other harnesses:** there is no refresh or publish step, even on a linked board. Just edit; the CLI says `saved locally`. The active backend is the source of truth. The JSON backend coordinates agents on this machine with a lock. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.
 
 ## Hierarchy and sessions
 

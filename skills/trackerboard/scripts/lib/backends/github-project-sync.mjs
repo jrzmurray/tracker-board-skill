@@ -1,8 +1,12 @@
 import { BoardError } from "../board.mjs";
 import {
-  MAX_NODE_ID_BYTES, MIN_GH_VERSION, PROJECT_FIELDS, assertSizes, draftItemId, fieldByName,
-  isDraftItem, itemBody, itemId, itemTitle, makeMetadata, readmeOf,
-  revisionToken, run, statusValue, valueOf, withMetadata,
+  clearItemFieldValue, createDraftIssue, deleteProjectItem, updateDraftIssue,
+  updateItemFieldValue, updateProject,
+} from "./github-project-api.mjs";
+import {
+  MAX_NODE_ID_BYTES, MAX_OPERATION_RECEIPTS, MIN_GH_VERSION, PROJECT_FIELDS, assertSizes, draftItemId, fieldByName,
+  isDraftItem, itemBody, itemId, itemTitle, makeMetadata, readmeOf, revisionToken,
+  statusValue, valueOf, withMetadata,
 } from "./github-project-core.mjs";
 
 const PHASE_FIELDS = ["Trackerboard ID", "Status", "Wave", "Lane", "Owner", "Order"];
@@ -28,7 +32,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     return phaseItems;
   }
 
-  function boardMetadata(snapshot, boardId, board, phaseItems, complete) {
+  function boardMetadata(snapshot, boardId, board, phaseItems, complete, desiredOperations) {
     const ids = wantedPhaseIds(board);
     updatePhaseMappings(snapshot, board, phaseItems);
     let pendingDelete = deletionManifest(snapshot, ids, phaseItems);
@@ -37,18 +41,25 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
       pendingDelete = pendingDelete.filter((entry) => liveItems.has(entry.itemId));
     }
     const mappings = Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || "x".repeat(MAX_NODE_ID_BYTES)]));
-    assertSizes(board, boardId, mappings, pendingDelete);
-    return makeMetadata(board, boardId, Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || ""])), pendingDelete, complete);
+    const operations = new Map();
+    for (const receipt of [...(snapshot?.metadata?.operations || []), ...desiredOperations]) {
+      const current = operations.get(receipt.id);
+      if (current && current.hash !== receipt.hash) throw new BoardError("GitHub log operation id was reused with different text.");
+      operations.set(receipt.id, receipt);
+    }
+    const receipts = [...operations.values()].slice(-MAX_OPERATION_RECEIPTS);
+    assertSizes(board, boardId, mappings, pendingDelete, receipts);
+    return makeMetadata(board, boardId, Object.fromEntries([...ids].map((id) => [id, phaseItems[id] || ""])), pendingDelete, complete, receipts);
   }
 
-  function writeReadme(ref, boardId, phaseItems, complete, previous, desired) {
+  function writeReadme(ref, boardId, phaseItems, complete, previous, desired, operations) {
     const latest = rereadBeforeMutation(ref, previous, desired);
     if (!latest) throw new BoardError("GitHub Project is unavailable.");
-    const metadata = boardMetadata(latest, boardId, desired, phaseItems, complete);
+    const metadata = boardMetadata(latest, boardId, desired, phaseItems, complete, operations);
     const currentReadme = readmeOf(latest.project);
     const next = withMetadata(currentReadme, metadata);
     if (next === currentReadme) return latest;
-    run(client, ["project", "edit", String(ref.number), "--owner", ref.owner, "--readme", next]);
+    updateProject(client, latest.ref, { readme: next });
     return latest;
   }
 
@@ -57,7 +68,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     const title = desired.title || desired.name;
     const current = String(latest?.project?.title || "");
     if (current === title) return;
-    run(client, ["project", "edit", String(ref.number), "--owner", ref.owner, "--title", title]);
+    updateProject(client, latest.ref, { title });
   }
 
   function phaseBody(boardId, phaseItems, pendingDelete, desired, phaseId) {
@@ -92,17 +103,16 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     const currentValue = valueOf(currentItem, currentField);
     const wanted = value === "" && definition.type === "TEXT" ? undefined : value;
     if (String(currentValue ?? "") === String(wanted ?? "")) return;
-    const args = ["project", "item-edit", "--id", item.id, "--project-id", latest.ref.id || ref.id || "", "--field-id", currentField.id];
-    if (definition.type === "TEXT") {
-      if (value === "") args.push("--clear");
-      else args.push("--text", String(value));
-    } else if (definition.type === "NUMBER") args.push("--number", String(value));
+    const projectId = latest.ref.id || ref.id;
+    if (!projectId) throw new BoardError("GitHub Project did not return an ID required to update an item.");
+    if (definition.type === "TEXT" && value === "") clearItemFieldValue(client, projectId, item.id, currentField.id);
+    else if (definition.type === "TEXT") updateItemFieldValue(client, projectId, item.id, currentField.id, { text: String(value) });
+    else if (definition.type === "NUMBER") updateItemFieldValue(client, projectId, item.id, currentField.id, { number: Number(value) });
     else if (definition.type === "SINGLE_SELECT") {
       const optionId = statusValue(currentField)[String(value).toLowerCase()];
       if (!optionId) throw new BoardError(`GitHub Project Status option ${value} is missing.`);
-      args.push("--single-select-option-id", optionId);
+      updateItemFieldValue(client, projectId, item.id, currentField.id, { singleSelectOptionId: optionId });
     }
-    run(client, args);
   }
 
   function updateDraftTitleOrBody(ref, item, key, phaseId, boardId, phaseItems, previous, desired) {
@@ -117,7 +127,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     if (current === value) return;
     const draftId = draftItemId(latestItem) || item.draftId;
     if (!draftId) throw new BoardError(`GitHub did not return the draft issue ID needed to update phase ${latestItem?.title || "item"}; verify gh is ${MIN_GH_VERSION} or newer.`);
-    run(client, ["project", "item-edit", "--id", draftId, "--project-id", latest.ref.id || ref.id || "", `--${key}`, value]);
+    updateDraftIssue(client, draftId, { [key]: value });
   }
 
   function deletionManifest(snapshot, wantedIds, phaseItems) {
@@ -134,7 +144,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     return [...byPhase.values()];
   }
 
-  function syncPass(ref, boardId, desired, { previous, starting }) {
+  function syncPass(ref, boardId, desired, { previous, starting, operations }) {
     let current = starting || readRemote(ref);
     if (previous && current?.loaded?.board) assertNoConflicts(previous, desired, current.loaded.board);
     const phaseItems = { ...(current?.metadata?.phaseItems || {}) };
@@ -142,7 +152,7 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
 
     // Publish the desired manifest before item mutations. Missing mappings can
     // be recovered from the phase ID in each draft body on retry.
-    writeReadme(ref, boardId, phaseItems, false, previous, desired);
+    writeReadme(ref, boardId, phaseItems, false, previous, desired, operations);
     setProjectTitle(ref, previous, desired);
 
     const phaseIds = [...wantedPhaseIds(desired)];
@@ -159,10 +169,18 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
       const body = phaseBody(boardId, phaseItems, pendingDelete, desired, phaseId);
       const title = position.phase.title || phaseId;
       if (!itemRef) {
-        run(client, ["project", "item-create", String(ref.number), "--owner", ref.owner, "--title", title, "--body", body, "--format", "json"]);
+        const projectId = latest.ref.id || ref.id;
+        if (!projectId) throw new BoardError("GitHub Project did not return an ID required to add a draft item.");
+        const created = createDraftIssue(client, projectId, title, body);
+        const createdId = created?.addProjectV2DraftIssue?.projectItem?.id;
+        if (!createdId) throw new BoardError(`GitHub created a draft item for phase ${phaseId} without returning its Project item ID; inspect the Project before retrying.`);
+        phaseItems[phaseId] = String(createdId);
+        // Persist the server-returned item ID before relying on the Project's
+        // forward item index, which can lag or omit a retrievable item.
+        writeReadme(ref, boardId, phaseItems, false, previous, desired, operations);
         latest = readRemote(ref, { allowMissing: true });
         mapped = managedItems(latest).get(phaseId);
-        if (!mapped) throw new BoardError(`GitHub draft item for phase ${phaseId} was created without a readable item ID; retry save to reconcile it.`);
+        if (!mapped) throw new BoardError(`GitHub created draft item ${createdId} for phase ${phaseId}, but its Project item index is not readable yet. The ID is saved for a safe retry; retry after GitHub catches up.`);
         itemRef = { id: mapped.id, draftId: mapped.draftId, item: mapped.item };
         phaseItems[phaseId] = mapped.id;
       }
@@ -189,13 +207,15 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
       const candidate = latest.items.find((item) => itemId(item) === currentDeletion.itemId);
       if (!candidate) continue;
       if (!isDraftItem(candidate)) throw new BoardError(`Refusing to remove non-draft GitHub item mapped to Trackerboard phase ${currentDeletion.id}.`);
-      run(client, ["project", "item-delete", String(ref.number), "--owner", ref.owner, "--id", currentDeletion.itemId]);
+      const projectId = latest.ref.id || ref.id;
+      if (!projectId) throw new BoardError("GitHub Project did not return an ID required to delete a draft item.");
+      deleteProjectItem(client, projectId, currentDeletion.itemId);
       delete phaseItems[currentDeletion.id];
     }
 
     latest = readRemote(ref, { allowMissing: true });
     updatePhaseMappings(latest, desired, phaseItems);
-    writeReadme(ref, boardId, phaseItems, true, previous, desired);
+    writeReadme(ref, boardId, phaseItems, true, previous, desired, operations);
     return rereadBeforeMutation(ref, previous, desired);
   }
 
@@ -203,11 +223,11 @@ export function createGitHubProjectSynchronizer({ client, readRemote, rereadBefo
     if (previous && remote?.loaded?.board) assertNoConflicts(previous, desired, remote.loaded.board);
   }
 
-  function syncBoard(ref, boardId, desired, { previous = null, starting = null } = {}) {
+  function syncBoard(ref, boardId, desired, { previous = null, starting = null, operations = [] } = {}) {
     let current = starting || readRemote(ref);
     for (let pass = 0; pass < MAX_RECONCILIATION_PASSES; pass++) {
       const before = JSON.stringify(desired);
-      current = syncPass(ref, boardId, desired, { previous, starting: current });
+      current = syncPass(ref, boardId, desired, { previous, starting: current, operations });
       const changedDuringPass = JSON.stringify(desired) !== before;
       if (!changedDuringPass) {
         const nextRevision = revisionToken(current?.loaded?.board, current?.metadata);

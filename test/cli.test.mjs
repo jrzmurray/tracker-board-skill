@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -17,7 +18,7 @@ function sandbox() {
   git("init", "-q", "-b", "main");
   git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
   const run = (args, { cwd = repo, ok = true, env: extra = {} } = {}) => {
-    const env = { ...process.env, TRACKERBOARD_HOME: home, ...extra };
+    const env = { ...process.env, TRACKERBOARD_HOME: home, TRACKERBOARD_PUBLISHER: "1", ...extra };
     delete env.TRACKERBOARD_BOARD;
     const r = spawnSync("node", [CLI, ...args], { cwd, env, encoding: "utf8" });
     if (ok && r.status !== 0) throw new Error(`${args.join(" ")} failed: ${r.stderr}`);
@@ -52,6 +53,27 @@ test("a branch binding is more specific than a repo binding", () => {
   assert.match(run(["show"]).stdout, /^repo-wide:/);
 });
 
+test("backend --set-binding validates a saved alias before changing the active target", () => {
+  const state = sandbox();
+  const other = path.join(state.dir, "other-repo");
+  fs.mkdirSync(other);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: other });
+  execFileSync("git", ["-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-q", "-m", "init"], { cwd: other });
+  state.run(["create", "select-me"]);
+  state.run(["bind", "--board", "select-me"], { cwd: other });
+  const localPath = path.join(state.home, "boards", "select-me.local.json");
+  const before = JSON.parse(fs.readFileSync(localPath, "utf8"));
+  const selected = before.bindings.find((binding) => binding.root === other);
+  assert.ok(selected);
+
+  const refused = state.run(["backend", "--board", "select-me", "--set-binding", "missing"], { ok: false });
+  assert.equal(refused.status, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(localPath, "utf8")), before);
+  assert.match(state.run(["backend", "--board", "select-me", "--set-binding", selected.key]).stdout, /now uses saved binding/);
+  assert.equal(JSON.parse(fs.readFileSync(localPath, "utf8")).storageBindingKey, selected.key);
+  assert.match(state.run(["show", "--board", "select-me"]).stdout, /^select-me:/);
+});
+
 test("unbound directory errors with guidance", () => {
   const { dir, run } = sandbox();
   run(["create", "x", "--no-bind"]);
@@ -70,27 +92,38 @@ test("delete accepts a positional phase; update rejects unknown flags", () => {
   assert.match(r.stderr, /unexpected option\(s\): --colour/);
 });
 
-test("push prints an ArtifactData call pinned to the recorded version", () => {
+// Parses the printed `publish_files` step into { slug, base_version, file_path }.
+function publishState(out) {
+  const call = JSON.parse(out.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(call.files.map((f) => f.as), ["state.json"]);
+  return { slug: call.slug, base_version: call.base_version, file_path: call.files[0].path };
+}
+
+test("push prints a publish_files call pinned to the recorded version", () => {
   const { home, run } = sandbox();
   run(["create", "b"]);
   run(["insert", "--phase", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  // An unchecked board never prints a publish: it could replace someone's board.
+  const unchecked = run(["push"]).stdout;
+  assert.match(unchecked, /publish: not yet/);
+  assert.doesNotMatch(unchecked, /publish_files \{/);
+  run(["check", "--version", "v0", "--sha", "none"]);
   let out = run(["push"]).stdout;
-  let call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
-  assert.equal(call.if_version, undefined);
-  assert.equal(call.collection, "board");
-  assert.equal(call.doc_id, "state");
+  let call = publishState(out);
+  assert.equal(call.base_version, "v0");
+  assert.equal(call.slug, "abc123");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].id, "P1");
   assert.ok(call.file_path.startsWith(home));
 
-  run(["synced", "--version", "7"]);
+  run(["synced", "--version", "v7"]);
   out = run(["update", "--phase", "P1", "--status", "done"]).stdout;
-  call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
-  assert.equal(call.if_version, 7);
+  call = publishState(out);
+  assert.equal(call.base_version, "v7");
   assert.equal(JSON.parse(fs.readFileSync(call.file_path, "utf8")).waves[0].phases[0].status, "done");
 
   out = run(["insert", "--phase", "P2", "--deps", "P1"]).stdout;
-  call = JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  call = publishState(out);
   const doc = JSON.parse(fs.readFileSync(call.file_path, "utf8"));
   assert.equal(doc.layout.engine, "elk-layered");
   assert.deepEqual(doc.layout.edges.map((e) => [e.from, e.to]), [["P1", "P2"]]);
@@ -109,7 +142,14 @@ test("page and render embed the board safely", () => {
   const md = html.match(/<script id="tb-md">(.*?)<\/script>/s)[1];
   assert.match(md, /markdownit/);
   assert.doesNotMatch(md, /<\/script|sourceMappingURL/i);
-  assert.match(run(["page"]).stdout, /"capabilities":\{"db"/);
+  // The published page carries no board data: state.json is published beside it.
+  const page = run(["page"]).stdout;
+  const first = JSON.parse(page.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(first.files.map((f) => f.as), ["index.html", "state.json"]);
+  const published = fs.readFileSync(first.files[0].path, "utf8");
+  assert.match(published, /<script type="application\/json" id="tb-data">null<\/script>/);
+  assert.doesNotMatch(published, /"phases"/);
+  assert.equal(JSON.parse(fs.readFileSync(first.files[1].path, "utf8")).waves[0].phases[0].title, "</script>");
 });
 
 test("field values can come from a file", () => {
@@ -147,10 +187,10 @@ test("owner is a phase field: set, shown, cleared", () => {
 
 test("refresh/pull merges a concurrent publish with unpublished local changes", () => {
   const { home, run } = sandbox();
-  const call = (out) => JSON.parse(out.match(/ArtifactData (\{.*\})/)[1]);
+  const call = publishState;
   const publishRemote = (mutate) => {
-    const file = path.join(home, "remote", "b", "board", "state.json");
-    const doc = JSON.parse(fs.readFileSync(path.join(home, "boards", "b.base.json"), "utf8"));
+    const file = path.join(home, "remote", "b", "state.json");
+    const doc = JSON.parse(fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"));
     mutate(doc);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(doc));
@@ -159,44 +199,146 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   run(["insert", "--phase", "P1"]);
   run(["insert", "--phase", "P2", "--deps", "P1"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  run(["check", "--version", "v0", "--sha", "none"]);
   let c = call(run(["push"]).stdout);
-  run(["synced", "--version", "1", "--doc", c.file_path]);
+  run(["synced", "--version", "v1", "--doc", c.file_path]);
 
   // Another agent publishes v2 (P1 done) while this one sets P2's owner.
   publishRemote((d) => { d.waves[0].phases[0].status = "done"; d.log.unshift({ at: "2030-01-01T00:00:00.000Z", text: "P1 merged" }); });
   run(["update", "--phase", "P2", "--owner", "me"]);
-  c = call(run(["refresh"]).stdout);
-  assert.equal(c.action, "get");
-  assert.equal(c.out_dir, path.join(home, "remote", "b"));
+  const refreshOut = run(["refresh"]).stdout;
+  assert.deepEqual(JSON.parse(refreshOut.match(/list_files (\{.*\})/)[1]), { slug: "abc123" });
 
-  let out = run(["pull", "--version", "2"]).stdout;
-  assert.match(out, /pulled b db version 2 \(was 1\)/);
-  assert.equal(call(out).if_version, 2);
+  let out = run(["pull", "--version", "v2"]).stdout;
+  assert.match(out, /pulled b artifact version v2 \(was v1\)/);
+  assert.equal(call(out).base_version, "v2");
+  assert.equal(fs.existsSync(path.join(home, "remote", "b", "state.json")), false);
   let show = run(["show"]).stdout;
   assert.match(show, /P1 +done/);
   assert.match(show, /P2 +planned .*@me/);
-  assert.match(run(["pull", "--version", "2"]).stdout, /current at db version 2/);
+  assert.match(run(["pull", "--version", "v2"]).stdout, /current at artifact version v2/);
+  // A moved version with no downloaded document says how to read it.
+  const unread = run(["pull", "--version", "v9"], { ok: false });
+  assert.match(unread.stderr, /read_file \{"slug":"abc123","paths":\["state.json"\]\}/);
 
   // Both sides change the same field: conflict until a side is chosen.
-  run(["synced", "--version", "3"]);
+  run(["synced", "--version", "v3"]);
   publishRemote((d) => { d.waves[0].phases[1].owner = "other"; });
   run(["update", "--phase", "P2", "--owner", "mine"]);
-  const r = run(["pull", "--version", "4"], { ok: false });
+  const r = run(["pull", "--version", "v4"], { ok: false });
   assert.match(r.stderr, /conflicts with unpublished changes here:\n  phase P2 owner/);
-  run(["pull", "--version", "4", "--theirs"]);
+  run(["pull", "--version", "v4", "--theirs"]);
   assert.match(run(["show"]).stdout, /@other/);
 });
 
-test("writes to a linked board need a recent refresh", () => {
+test("check compares the published hash and reads nothing", () => {
+  const { run } = sandbox();
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+  run(["check", "--version", "v0", "--sha", "none"]);
+  const c = publishState(run(["push"]).stdout);
+  run(["synced", "--version", "v1", "--doc", c.file_path]);
+  const sha = createHash("sha256").update(fs.readFileSync(c.file_path)).digest("hex");
+  assert.match(run(["show"]).stdout, /last pushed 0m ago/);
+
+  // Same hash, new version (e.g. a page republish): current, no pull.
+  assert.match(run(["check", "--version", "v2", "--sha", sha]).stdout, /is current \(version v2\)/);
+  // Another writer changed state.json: stop without reading it.
+  const other = "f".repeat(64);
+  const r = run(["check", "--version", "v3", "--sha", other]);
+  assert.match(r.stdout, /diverged: .*Nothing was overwritten/);
+  assert.match(r.stdout, /--overwrite/);
+  // Accepting the overwrite pins the next push to the live version.
+  const o = run(["check", "--version", "v3", "--sha", other, "--overwrite"]).stdout;
+  assert.match(o, /will overwrite/);
+  assert.equal(publishState(o).base_version, "v3");
+  run(["check", "--version", "v3", "--sha", "nope"], { ok: false });
+});
+
+test("review regressions: first publish, overwrite then merge, no base, late edits, legacy page", () => {
+  const { home, run } = sandbox();
+  const remote = path.join(home, "remote", "b", "state.json");
+  let cached = null;
+  const putRemote = (mutate) => {
+    try { cached = fs.readFileSync(path.join(home, "bases", "b.json"), "utf8"); } catch {}
+    const doc = JSON.parse(cached);
+    mutate(doc);
+    fs.mkdirSync(path.dirname(remote), { recursive: true });
+    fs.writeFileSync(remote, JSON.stringify(doc));
+  };
+  run(["create", "b"]);
+  run(["insert", "--phase", "P1"]);
+  run(["link", "--url", "https://claude.ai/artifact/abc123"]);
+
+  // 1. An artifact that already holds a state.json is never published over blind.
+  const other = "a".repeat(64);
+  assert.match(run(["check", "--version", "v1", "--sha", other]).stdout, /diverged:/);
+  assert.doesNotMatch(run(["push"]).stdout, /publish_files \{/);
+
+  // 4. A legacy artifact (no state.json): the page is republished with one.
+  run(["check", "--version", "v1", "--sha", "none"]);
+  const page = JSON.parse(run(["page"]).stdout.match(/publish: publish_files (\{.*\})/)[1]);
+  assert.deepEqual(page.files.map((f) => f.as), ["index.html", "state.json"]);
+  const c = publishState(run(["push"]).stdout);
+  run(["synced", "--version", "v2", "--doc", c.file_path]);
+
+  // 5. An edit made after the snapshot is not lost by synced.
+  run(["update", "--phase", "P1", "--owner", "late"]);
+  const snap = publishState(run(["push"]).stdout);
+  run(["update", "--phase", "P1", "--owner", "later"]);
+  assert.match(run(["synced", "--version", "v3", "--doc", snap.file_path]).stdout, /edits were made after that snapshot[^]*publish_files/);
+
+  // 2. --overwrite, then a deliberate merge at the same version still merges.
+  putRemote((d) => { d.waves[0].phases[0].status = "done"; });
+  run(["check", "--version", "v4", "--sha", "b".repeat(64), "--overwrite"]);
+  const pulled = run(["pull", "--version", "v4"]).stdout;
+  assert.match(pulled, /pulled b artifact version v4/);
+  assert.match(run(["show"]).stdout, /P1 +done/);
+
+  // 3. No merge base: a differing board is never replaced silently.
+  run(["link", "--url", "https://claude.ai/artifact/other"]);
+  run(["update", "--phase", "P1", "--owner", "mine"]);
+  putRemote((d) => { d.waves[0].phases[0].owner = "theirs"; });
+  const nb = run(["pull", "--version", "v1"], { ok: false });
+  assert.match(nb.stderr, /no merge base is recorded/);
+  assert.match(run(["show"]).stdout, /@mine/);
+  run(["pull", "--version", "v1", "--theirs"]);
+  assert.match(run(["show"]).stdout, /@theirs/);
+});
+
+test("stale edits to a linked board apply; only Claude harnesses see publish steps", () => {
   const { run } = sandbox();
   run(["create", "b"]);
   run(["link", "--url", "https://claude.ai/artifact/abc123"]);
-  run(["synced", "--version", "1"]);
+  run(["synced", "--version", "v1"]);
   const stale = { env: { TRACKERBOARD_FRESH_SECONDS: "-1" } };
-  const r = run(["insert", "--phase", "P1"], { ...stale, ok: false });
-  assert.match(r.stderr, /last checked against its artifact .*\nrefresh: ArtifactData \{"action":"get"/);
+  // A stale check no longer blocks an edit; the publish is the guarded step.
+  const r = run(["insert", "--phase", "P1"], stale);
+  assert.match(r.stdout, /publish: publish_files/);
+  assert.match(r.stdout, /safe: .*refused, never overwritten/);
   assert.match(run(["show"], stale).stdout, /note: last checked against the artifact/);
-  run(["insert", "--phase", "P1"]);
+  // Any other agent just edits: no refresh or publish steps, no complaint.
+  const other = { env: { TRACKERBOARD_PUBLISHER: "0" } };
+  const o = run(["insert", "--phase", "P2"], other).stdout;
+  assert.match(o, /saved locally\. Nothing else to do/);
+  assert.doesNotMatch(o, /publish_files|refresh|list_files/);
+  assert.doesNotMatch(run(["show"], { env: { TRACKERBOARD_PUBLISHER: "0", TRACKERBOARD_FRESH_SECONDS: "-1" } }).stdout, /note: last checked/);
+});
+
+test("a board with no artifact prints no sync steps; other agents see no publish hint at all", () => {
+  for (const publisher of ["1", "0"]) {
+    const env = { env: { TRACKERBOARD_PUBLISHER: publisher, TRACKERBOARD_FRESH_SECONDS: "-1" } };
+    const { run } = sandbox();
+    run(["create", "b"], env);
+    for (const args of [["insert", "--phase", "P1"], ["update", "--phase", "P1", "--status", "done"], ["log", "note"], ["show"]]) {
+      // Claude harnesses get one hint that `page` can publish a first artifact; nobody gets sync steps.
+      const out = run(args, env).stdout.replace(/^publish: \(no artifact linked[^\n]*\n/m, publisher === "1" ? "" : "$&");
+      assert.doesNotMatch(out, /publish|list_files|refresh|check|saved locally|last checked/, `publisher=${publisher} ${args[0]}`);
+    }
+    assert.match(run(["show"], env).stdout, /P1/);
+    assert.doesNotMatch(run(["push"], env).stdout, /publish_files \{/);
+  }
 });
 
 test("show filters by lane, status and owner, and lists ids or PRs", () => {
@@ -277,24 +419,27 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   const backendHome = path.join(state.dir, "backend-data");
   const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
   state.run(["create", "migrate-me"]);
+  const initialBoardId = JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId;
   state.run(["insert", "--phase", "P1", "--title", "before migration"]);
   state.run(["link", "--url", "https://claude.ai/artifact/abc123"]);
-  state.run(["synced", "--version", "1"]);
+  state.run(["synced", "--version", "v1"]);
 
   fs.mkdirSync(backendHome, { recursive: true });
   fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({ backend: "github" }));
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
 
-  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json → sqlite/);
+  assert.match(state.run(["migrate", "--to", "sqlite", "--dry-run"], env).stdout, /dry run: migrate-me \(1 phases, .*\) json@[^ ]+ → sqlite@[^;]+/);
   assert.equal(fs.existsSync(path.join(backendHome, "repos")), false);
 
   const moved = state.run(["migrate", "--to", "sqlite"], env);
   assert.match(moved.stdout, /read-back verified/);
   assert.match(state.run(["migrate", "--to", "sqlite"], env).stdout, /already uses sqlite/);
   const recovery = moved.stdout.match(/recovery: (.+)/)[1];
+  assert.equal(path.dirname(recovery), path.join(state.home, "recovery"));
   assert.equal(fs.statSync(recovery).mode & 0o777, 0o600);
   assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
   assert.match(state.run(["show"], env).stdout, /P1 +planned +before migration/);
 
   state.run(["update", "--phase", "P1", "--title", "edited in SQLite"], env);
@@ -305,7 +450,115 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   const exported = state.run(["migrate", "--to", "json"], env);
   assert.match(exported.stdout, /read-back verified/);
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
   assert.match(state.run(["show"], env).stdout, /P1 +planned +edited in SQLite/);
   assert.match(state.run(["migrate", "--to", "json"], env).stdout, /already uses json/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.json"), "utf8")).waves[0].phases[0].title, "edited in SQLite");
+});
+
+test("unbound GitHub flows require repository identity before migration or bootstrap", () => {
+  const state = sandbox();
+  const backendHome = path.join(state.dir, "backend-data");
+  const gh = path.join(state.dir, "gh");
+  const ghLog = path.join(state.dir, "gh.log");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "unbound-github", "--no-bind", "--repo-url", "https://github.com/acme/widgets"], env);
+  state.run(["create", "unbound-github-no-repo", "--no-bind"], env);
+  fs.mkdirSync(backendHome, { recursive: true });
+  fs.writeFileSync(gh, `#!/bin/sh
+printf '%s\\n' "$*" >> "${ghLog}"
+case "$1:$2" in
+  --version:) echo 'gh version v2.96.0' ;;
+  auth:status) echo '{"hosts":{"github.com":[{"active":true,"scopes":["project"]}]}}' ;;
+  project:list) echo '{"projects":[]}' ;;
+  project:view) echo 'stopped at fake project view' >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({
+    backend: "github",
+    github: { owner: "acme", executable: gh },
+  }));
+
+  const refused = state.run(["migrate", "--board", "unbound-github", "--to", "github"], { ...env, ok: false });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /saved repository identity and configured\/saved Project/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "unbound-github", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show", "--board", "unbound-github"], env).stdout, /^unbound-github:/);
+
+  fs.writeFileSync(path.join(backendHome, "config.json"), JSON.stringify({
+    backend: "github",
+    github: { owner: "acme", projectNumber: 12, executable: gh },
+  }));
+  const refusedWithoutIdentity = state.run(["migrate", "--board", "unbound-github-no-repo", "--to", "github"], { ...env, ok: false });
+  assert.equal(refusedWithoutIdentity.status, 1);
+  assert.match(refusedWithoutIdentity.stderr, /saved repository identity and configured\/saved Project/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "unbound-github-no-repo", "--json"], env).stdout).backend, "json");
+
+  const createRefused = state.run(["create", "unbound-github-create-no-repo", "--no-bind"], { ...env, ok: false });
+  assert.equal(createRefused.status, 1);
+  assert.match(createRefused.stderr, /needs a saved repository identity/);
+  assert.equal(fs.existsSync(ghLog), false);
+  assert.equal(fs.existsSync(path.join(state.home, "boards", "unbound-github-create-no-repo.local.json")), false);
+
+  const createWithIdentity = state.run([
+    "create", "unbound-github-create-with-repo", "--no-bind", "--repo-url", "https://github.com/acme/roadmap",
+  ], { ...env, ok: false });
+  assert.equal(createWithIdentity.status, 1);
+  assert.doesNotMatch(createWithIdentity.stderr, /needs a saved repository identity/);
+  assert.match(fs.readFileSync(ghLog, "utf8"), /api graphql/);
+});
+
+test("migration selects its destination binding without switching sources before verification", () => {
+  const state = sandbox();
+  const secondRepo = path.join(state.dir, "repo-second");
+  fs.mkdirSync(secondRepo);
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: secondRepo });
+  execFileSync("git", ["-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "-q", "-m", "init"], { cwd: secondRepo });
+  const backendHome = path.join(state.dir, "backend-data");
+  const env = { env: { TRACKERBOARD_DATA_HOME: backendHome } };
+  state.run(["create", "destination-test"], env);
+  state.run(["insert", "--phase", "P1", "--title", "source JSON"], env);
+  const sourceLocalPath = path.join(state.home, "boards", "destination-test.local.json");
+  const boardId = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8")).boardId;
+  state.run(["bind", "--board", "destination-test"], { ...env, cwd: secondRepo });
+  const localWithBothBindings = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8"));
+  const destinationBinding = localWithBothBindings.bindings.find((binding) => binding.root === secondRepo);
+  assert.ok(destinationBinding);
+  fs.mkdirSync(path.join(backendHome, "repos"), { recursive: true });
+  fs.writeFileSync(path.join(backendHome, "repos", `${destinationBinding.key}.json`), JSON.stringify({ backend: "sqlite", sqlite: { path: "destination.sqlite" } }));
+
+  const dryRun = state.run(["migrate", "--to", "sqlite", "--binding", destinationBinding.key, "--dry-run"], env).stdout;
+  assert.match(dryRun, new RegExp("json@[^ ]+ → sqlite@" + destinationBinding.key));
+  assert.equal(fs.existsSync(path.join(backendHome, "destination.sqlite")), false);
+
+  const migrated = state.run(["migrate", "--to", "sqlite", "--binding", destinationBinding.key], env);
+  assert.match(migrated.stdout, /read-back verified/);
+  const migratedLocal = JSON.parse(fs.readFileSync(sourceLocalPath, "utf8"));
+  assert.equal(migratedLocal.storageBindingKey, destinationBinding.key);
+  assert.equal(migratedLocal.boardId, boardId);
+  assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).bindingKey, destinationBinding.key);
+  assert.match(state.run(["show", "--board", "destination-test"], env).stdout, /source JSON/);
+
+  state.run(["create", "conflict-test", "--title", "source remains active"], env);
+  state.run(["insert", "--board", "conflict-test", "--phase", "P1", "--title", "source phase"], env);
+  state.run(["bind", "--board", "conflict-test"], { ...env, cwd: secondRepo });
+  const conflictLocalPath = path.join(state.home, "boards", "conflict-test.local.json");
+  const conflictBinding = JSON.parse(fs.readFileSync(conflictLocalPath, "utf8")).bindings.find((binding) => binding.root === secondRepo);
+  const alternateHome = path.join(state.dir, "alternate-home");
+  state.run(["create", "conflict-test", "--title", "preserve destination"], {
+    env: { TRACKERBOARD_HOME: alternateHome, TRACKERBOARD_DATA_HOME: backendHome },
+    cwd: secondRepo,
+  });
+  const refused = state.run(["migrate", "--board", "conflict-test", "--to", "sqlite", "--binding", conflictBinding.key], { ...env, ok: false });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /already contains a different board/);
+  assert.equal(JSON.parse(state.run(["backend", "--board", "conflict-test", "--json"], env).stdout).backend, "json");
+  assert.match(state.run(["show", "--board", "conflict-test"], env).stdout, /source phase/);
+  assert.match(state.run(["show", "--board", "conflict-test"], {
+    env: { TRACKERBOARD_HOME: alternateHome, TRACKERBOARD_DATA_HOME: backendHome },
+    cwd: secondRepo,
+  }).stdout, /conflict-test: preserve destination/);
 });

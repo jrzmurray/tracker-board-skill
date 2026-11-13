@@ -1,0 +1,14 @@
+{
+  "name": "tracker-board",
+  "owner": {
+    "name": "jrzmurray"
+  },
+  "plugins": [
+    {
+      "name": "trackerboard",
+      "source": "./",
+      "description": "Phase/wave tracker boards with /trackerboard:<action> commands and the trackerboard skill."
+    }
+  ],
+  "description": "Phase/wave tracker boards for Claude Code."
+}

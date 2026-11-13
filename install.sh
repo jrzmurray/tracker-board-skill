@@ -29,6 +29,11 @@ if [[ -n "${CLAUDE_SKILLS_DIR:-}" ]]; then
   install_claude_skill=1
 fi
 
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' 2>/dev/null; then
+  printf 'error: trackerboard needs Node 24 or newer (found %s)\n' "$(node -v 2>/dev/null || echo none)" >&2
+  exit 1
+fi
+
 (cd "$here" && npm install --omit=dev --no-audit --no-fund --silent)
 mkdir -p "$bin"
 ln -sfn "$here/skills/trackerboard/scripts/trackerboard.mjs" "$bin/trackerboard"

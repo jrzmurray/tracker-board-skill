@@ -1,7 +1,7 @@
 ---
 name: trackerboard
 description: Create and edit harness-neutral phase/wave boards with the trackerboard CLI. JSON is the default backend; Claude artifact publishing is optional. Use for any tracker-board change, including phase or wave CRUD, status/PR/notes fields, dependencies, and generated-board imports.
-argument-hint: "[create|insert|update|delete|dep|log|show|refresh|page|import|github] [--board name] [--phase id] …"
+argument-hint: "[show|insert|update|delete|dep|log|create|boards|bind|refresh|check|push|page|pull|synced|link|import|github|refresh-prs|render|serve|migrate] [--board name] [--phase id] [--status s] …"
 ---
 
 # trackerboard
@@ -44,13 +44,13 @@ trackerboard log "JR ruled the EXCLUDED sites"
 
 For every backend, read with `trackerboard show` before work and make changes through the CLI. GitHub rereads and reconciles before narrow writes, but its concurrency protection is best effort because GitHub does not provide compare-and-swap for these updates. Coordinate simultaneous writers and inspect the board after concurrent changes.
 
-For a board linked to a Claude artifact, other agents may publish at any time. The CLI tracks the published version and won't let you write from a stale copy. Run `trackerboard refresh` before reading or writing that linked board.
+For a board linked to a Claude artifact, other agents may publish at any time. Edits always apply locally and are never blocked. The publish is the guarded step: it is refused, never overwritten, if anyone published since the recorded version. Claude agents run `trackerboard refresh` before reading a linked board and publish after editing. Agents without the claude-artifacts tools just edit; the CLI prints `saved locally` and a Claude agent publishes.
 
-**Refresh a linked Claude artifact:** `trackerboard refresh` prints an `ArtifactData get` call. Make it, then run the printed `trackerboard pull --version <version from the result>`.
+**Refresh a linked Claude artifact:** `trackerboard refresh` prints a `list_files` call (a few lines, no board data). Make it, then run the printed `trackerboard check --version V --sha H` using the version and the `state.json` sha256 from the result. `check` only compares the hash with the last push; it reads nothing. If the hash differs, another writer changed the board: stop and ask the user. They choose `check ... --overwrite` (your board replaces theirs on the next push) or a deliberate merge (`read_file`, copy to the printed path, `trackerboard pull --version V`; this puts the whole board in context). Don't run `show` or read `state.json` unless asked.
 - If nothing changed, `pull` does nothing.
 - Otherwise it merges the published board with unpublished local changes. Conflicts on the same field stop the pull; ask which value to keep, then rerun with `--theirs` or `--ours`.
 
-Writes to a linked artifact are refused if it has not been checked within 120 seconds (`TRACKERBOARD_FRESH_SECONDS`). A `synced` counts as a check, so a batch of writes made after refresh or publish goes straight through.
+A read of a linked board notes when it was last checked, after 120 seconds (`TRACKERBOARD_FRESH_SECONDS`). Writes are never refused for that. Publish steps are shown only to Claude harnesses (`CLAUDECODE` set, or `TRACKERBOARD_PUBLISHER=1`).
 
 ## Backends and migration
 
@@ -63,7 +63,7 @@ trackerboard serve [--board NAME] [--port N]
 trackerboard refresh-prs [--repo OWNER/NAME] [--limit N]
 ```
 
-`backend` reports resolved configuration and active storage; it does not switch storage. `migrate` first writes a mode-0600 recovery snapshot, copies to the target, reads it back, validates it, and changes the active override only after verification. If a migration fails, the source backend remains active. Moving JSON to SQLite or GitHub leaves the JSON file as an inactive recovery snapshot. Moving back to JSON exports current active data and never restores stale snapshot contents. Migration detaches a linked Claude artifact without deleting or changing it. The old artifact remains a read-only snapshot, and `page`, `link`, `push`, `refresh`, `pull` and `synced` are unavailable after migration.
+`backend` reports resolved configuration and active storage; it does not switch storage. `migrate` first writes a mode-0600 recovery snapshot under `~/.trackerboard/recovery/`, copies to the target, reads it back, validates it, and changes the active override only after verification. If a migration fails, the source backend remains active. Moving JSON to SQLite or GitHub leaves the JSON file as an inactive recovery snapshot. Moving back to JSON exports current active data and never restores stale snapshot contents. Migration detaches a linked Claude artifact without deleting or changing it. The old artifact remains a read-only snapshot, and `page`, `link`, `push`, `refresh`, `pull` and `synced` are unavailable after migration.
 
 Select `backend: "github"` before creating a board, or migrate an existing board. Bootstrap creates a generic Project, immediately sets it PRIVATE, and verifies that state before writing board data. If privacy cannot be verified, Trackerboard attempts to delete the still-empty placeholder and stops with permission guidance. The owner is derived from the repository remote or board `repoUrl`; the Project pointer and stable board ID are kept in local metadata. No token is requested, logged, or stored. Phases are Project draft items, not repository Issues. GitHub cannot hide a repository's Issues; this backend avoids creating any and stores the phases only as private Project draft items.
 
@@ -78,20 +78,23 @@ The Project fields are Trackerboard ID, Status (the nine phase statuses), Wave, 
 Every write to a linked Claude artifact ends with:
 
 ```
-publish: ArtifactData {"action":"set","url":"…","collection":"board","doc_id":"state","file_path":"…/out/docs/<name>-<hash>.json","if_version":7}
+publish: publish_files {"slug":"…","base_version":"<recorded version>","files":[{"as":"state.json","path":"…/out/docs/<name>-<hash>.json"}]}
 then:    trackerboard synced --board <name> --version <version from the result> --doc …
 ```
 
 The document includes the dependency-graph layout (computed with ELK by the CLI); the page only draws it. If the CLI warns that the layout was skipped, run `npm install` in the trackerboard repo; the publish still works.
 
-Make exactly that `ArtifactData` call (load the tool with ToolSearch `select:ArtifactData` if it is deferred), then run the `synced` line with the `version` from the result. The page updates live for anyone viewing it. Batch several writes, then publish once: only the last write's steps matter.
+The board is published as a file, `state.json`, next to the page. The page holds no copy of the board: it fetches `state.json` on load and every 30 seconds, so an open page follows publishes without a reload. `publish_files` uploads the file from disk, so the board never passes through the model and a publish costs almost no tokens, whatever its size. (`ArtifactData` no longer exists in the Claude Desktop build, and `db_write` would need the whole document inline.)
 
-- **Refused for a version mismatch:** someone published in between. Run `trackerboard refresh`, make its `get` call, and run `pull`. That merges your changes onto theirs and prints a new publish step; make that call. Nothing needs to be redone.
-- **No `if_version` printed, and the write is refused because the document exists:** do the refresh steps, then `trackerboard push` and retry.
+Make that call with `mcp__claude-artifacts__publish_files` (load it with ToolSearch if it is deferred), then run the `synced` line with the version id from the result. The call changes only `state.json`; the page and any other files are kept. Batch several writes, then publish once: only the last write's steps matter.
+
+- **Refused for a version mismatch (`base_version`):** someone published in between. Run `trackerboard refresh`, make its `list_files` call, then `check`. If the board itself changed, `check` stops and offers `--overwrite` or a deliberate `pull` merge; otherwise it prints a new publish step. Make that call.
+- **No recorded version:** `push` and `page` print the check steps instead of a publish, because a publish could replace a board this machine never compared. Run `trackerboard check` (use `--sha none` if the artifact has no `state.json`, e.g. a legacy page; then `page` republishes the page together with one).
+- **Don't read the page to update it.** Without `publish_files`, the `Artifact` tool refuses a first publish to an artifact the session has not viewed and returns the live page to merge onto. For a legacy artifact that page embeds the whole board (about 90k tokens on a large one), and rendering or reading it is never needed: the CLI already holds the board, and `page` and `push` write every file that gets published. Only when the user says to replace the page without looking, pass the paths in `overwrite_unread` so the read is skipped. A page already migrated to `state.json` is small, so the one-time read is cheap.
 
 Commands on one machine take a lock (`~/.trackerboard/.lock`), so agents sharing a machine never lose each other's writes.
 
-**First publish** (a new board, or an old hand-written tracker being replaced): run `trackerboard page`. It writes the page and prints the `Artifact` publish call with the `db` capability. Make that call, then `trackerboard link --url <artifact url>` and `trackerboard push`, and make the printed `ArtifactData` call. After publishing, the page HTML only needs republishing when this skill's page template changes (`trackerboard page` prints that call too).
+**First publish** (a new board, or an old hand-written tracker being replaced): run `trackerboard page`. It writes `index.html` (no board data) and the `state.json` document, and prints a `publish_files` call for both. Make it, then run the printed `trackerboard link --url <artifact url>` and `trackerboard synced --version <version from the result> --doc …`. No database or capability is needed. To republish only the page (when this skill's page template changes), run `trackerboard page` again; it prints a `publish_files` call for `index.html` alone.
 
 ## Reading
 

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { BoardError } from "../board.mjs";
 import { registerBackendFactory } from "../backend.mjs";
+import { assertOperationMatch } from "../operation-receipts.mjs";
 
 const require = createRequire(import.meta.url);
 const initSqlJs = require("sql.js");
@@ -65,6 +66,12 @@ function ensureSchema(db) {
     board_json TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 0)
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS trackerboard_operations (
+    name TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    operation_hash TEXT NOT NULL,
+    PRIMARY KEY (name, operation_id)
+  )`);
 }
 
 function readRow(db, name) {
@@ -74,6 +81,27 @@ function readRow(db, name) {
     return statement.step() ? statement.getAsObject() : null;
   } finally {
     statement.free();
+  }
+}
+
+function readOperationRow(db, name, id) {
+  const statement = db.prepare("SELECT operation_id AS id, operation_hash AS hash FROM trackerboard_operations WHERE name = ? AND operation_id = ?");
+  try {
+    statement.bind([name, id]);
+    return statement.step() ? statement.getAsObject() : null;
+  } finally {
+    statement.free();
+  }
+}
+
+function readOperation(file, name, id) {
+  const db = openDatabase(file);
+  if (!db) return null;
+  try {
+    const tables = db.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trackerboard_operations'");
+    return tables.length ? readOperationRow(db, name, id) : null;
+  } finally {
+    db.close();
   }
 }
 
@@ -241,11 +269,17 @@ function makeBackend(context) {
       });
     },
 
-    save(board, { expectedRevision } = {}) {
+    save(board, { expectedRevision, operation } = {}) {
       const serialized = serializeBoard(board, context.name);
+      if (operation) assertOperationMatch([], operation);
       return mutate(file, (db) => {
         const row = readRow(db, context.name);
         const current = row ? rowRevision(row) : 0;
+        const existing = operation ? readOperationRow(db, context.name, operation.id) : null;
+        if (existing) {
+          assertOperationMatch([existing], operation);
+          return current;
+        }
         if (expectedRevision != null && expectedRevision !== current) {
           const error = new BoardError(`board ${context.name} changed (expected revision ${expectedRevision}, current ${current}); reload and retry`);
           error.code = "TRACKERBOARD_REVISION_CONFLICT";
@@ -254,9 +288,18 @@ function makeBackend(context) {
         if (!row || row.board_json == null) throw new BoardError(`board ${context.name} does not exist`);
         const revision = incrementRevision(current);
         db.run(`UPDATE ${TABLE} SET board_json = ?, revision = ? WHERE name = ?`, [serialized, revision, context.name]);
+        if (operation) {
+          assertOperationMatch([], operation);
+          db.run("INSERT INTO trackerboard_operations (name, operation_id, operation_hash) VALUES (?, ?, ?)", [context.name, operation.id, operation.hash]);
+          db.run(`DELETE FROM trackerboard_operations WHERE name = ? AND operation_id NOT IN (
+            SELECT operation_id FROM trackerboard_operations WHERE name = ? ORDER BY rowid DESC LIMIT 100
+          )`, [context.name, context.name]);
+        }
         return revision;
       });
     },
+
+    getOperation(id) { return readOperation(file, context.name, id); },
 
     revision() {
       const row = readRecord(file, context.name);
@@ -266,8 +309,8 @@ function makeBackend(context) {
     remove() {
       mutate(file, (db) => {
         const row = readRow(db, context.name);
-        if (row?.board_json == null) return;
-        db.run(`UPDATE ${TABLE} SET board_json = NULL, revision = ? WHERE name = ?`, [incrementRevision(rowRevision(row)), context.name]);
+        if (row?.board_json != null) db.run(`UPDATE ${TABLE} SET board_json = NULL, revision = ? WHERE name = ?`, [incrementRevision(rowRevision(row)), context.name]);
+        db.run("DELETE FROM trackerboard_operations WHERE name = ?", [context.name]);
       });
     },
   };

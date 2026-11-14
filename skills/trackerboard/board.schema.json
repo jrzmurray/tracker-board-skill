@@ -53,10 +53,11 @@
         "title": { "type": "string" },
         "lane": { "type": "string", "description": "Grouping within a wave." },
         "owner": { "type": "string", "description": "Who is working it." },
+        "session": { "type": "string", "description": "Link (https URL) or id of the agent session working it; the owner mark links here." },
         "status": {
           "type": "string",
-          "description": "todo | active | review | waiting | blocked | done | ongoing | external | dropped. Aliases such as planned, in_progress, merged and shipped are accepted.",
-          "default": "todo"
+          "description": "planning | planned | active | review | waiting | blocked | done | ongoing | external | dropped. Aliases such as planned, in_progress, merged and shipped are accepted.",
+          "default": "planned"
         },
         "note": { "type": "string", "description": "One line shown under the status." },
         "req": { "type": "string", "description": "Requirements detail (expandable)." },

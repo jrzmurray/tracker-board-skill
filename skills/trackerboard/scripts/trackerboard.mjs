@@ -6,17 +6,20 @@ import fs from "node:fs";
 import path from "node:path";
 import * as B from "./lib/board.mjs";
 import * as S from "./lib/store.mjs";
+import * as T from "./lib/tree.mjs";
+import { detectSession } from "./lib/session.mjs";
 import { docBody, renderStandalone } from "./lib/render.mjs";
 import { createArtifactCommands } from "./commands/artifact.mjs";
 import { createBackendCommands } from "./commands/backend.mjs";
 import { createGeneratedCommands } from "./commands/generated.mjs";
+import { createSdocCommands } from "./commands/sdoc.mjs";
 import { createDisplayHelpers } from "./lib/cli/display.mjs";
 
 const FRESH_SECONDS_HELP = process.env.TRACKERBOARD_FRESH_SECONDS ?? 120;
 const USAGE = `trackerboard <command> [options]
 
 Boards
-  create <name> [--title T] [--repo-url URL] [--branch] [--no-bind]
+  create <name> [--title T] [--repo-url URL] [--parent BOARD] [--branch] [--no-bind]
                          Create a board and bind it to the current repo (or dir).
   boards                 List boards; marks the one this directory resolves to.
   bind [--board B] [--branch]     Record that this repo (all its worktrees) uses a board, so --board can
@@ -36,16 +39,18 @@ Write (--board is optional when exactly one board resolves from the cwd)
   insert --wave W [--title T] [--prefix X] [--after W2]   Add a wave.
   update --phase P [--wave W] [fields] [--rename P2] [--to-wave W2]
   update --wave W [--title T] [--prefix X] [--notes N] [--rename W2]
-  update [board fields]                   --title --subtitle --lede --notes --repo-url
+  update [board fields]                   --title --subtitle --lede --notes --repo-url --parent BOARD ("" = none)
+  tree [--board B | --all]  Outline of the board hierarchy with rolled-up progress.
   delete [--wave W] <P> | --phase P       Delete a phase (its inbound deps are removed).
   delete --wave W [--force]               Delete a wave (--force if it has phases).
   dep add <P> --on A,B | dep rm <P> --on A | dep set <P> --on A,B | dep clear <P>
   log "<text>"                            Append to the board's change log.
 
 Phase fields
-  --title --lane --owner --status --note --req --issue --pr --review --notes --deps A,B
+  --title --lane --owner --session --status --note --req --issue --pr --review --notes --deps A,B
   --issue: the GitHub issue (#1234, or a bare number).
-  --owner: who is working the phase (agent id or person); "" clears it.
+  --owner: who is working the phase (agent id or person); "" clears it. "claude" also records this Claude session.
+  --session: link (https URL) or id of that agent's session; the owner mark on the page links to it.
   --status: ${B.STATUSES.join(" | ")} (aliases: merged, in-progress, not-started, n/a, ...)
   Any write accepts --log "<text>". A value of @file reads the field from a file; - reads stdin.
 
@@ -70,7 +75,12 @@ Generated boards (the input format is board.schema.json)
   import [name] --from FILE --replace [--keep owner,note]
                           Update an existing board from regenerated JSON; logs status
                           changes, adds and removals. --keep: phase fields the board keeps.
-  github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE]
+  sdoc PATH... --root NAME --out DIR [--group-by document,domain,section,FIELD,...]
+       [--status-map in_progress=active,...] [--pr-field F] [--note-fields A,B] [--repo-url URL]
+                          Read StrictDoc (.sdoc) files and write a board hierarchy as JSON: the
+                          root board, one board per --group-by level, UIDs as phases. Parent
+                          relations are dependencies. Then import each file, root first.
+  github [--repo OWNER/NAME] [--in title,branch,labels,body] [--dry-run] [--file FILE] [--gh-cache FILE]
                           Find phase ids in open PRs and issues: fill --pr and --issue,
                           without changing the human-controlled phase status. PR lifecycle
                           badges are derived separately. --repo defaults to the board's repo URL.
@@ -115,6 +125,16 @@ function readValue(v) {
   if (v === "-") return fs.readFileSync(0, "utf8").replace(/\n$/, "");
   if (v.startsWith("@") && v.length > 1 && fs.existsSync(v.slice(1))) return fs.readFileSync(v.slice(1), "utf8").replace(/\n$/, "");
   return v;
+}
+
+// The session to record for an owner: the caller's own, but only when the
+// owner is the caller (or the session was set explicitly). Assigning work to
+// another agent must not link to this agent's session, and "" clears a stale one.
+function sessionFor(owner) {
+  const session = detectSession();
+  if (!session) return "";
+  if (process.env.TRACKERBOARD_SESSION) return session;
+  return process.env.CLAUDE_CODE_SESSION_ID && String(owner).trim().toLowerCase() === "claude" ? session : "";
 }
 
 function take(opts, names) {
@@ -166,12 +186,16 @@ const commands = {
   ...createBackendCommands({ boardName, rejectLeftovers, out }),
   ...artifact.commands,
   ...generatedCommands,
+  ...createSdocCommands({ out }),
 
   create({ pos, opts }) {
     const name = S.checkName(pos[0] || opts.board);
     const meta = take(opts, ["title", "repoUrl"]);
+    const parent = take(opts, ["parent"]).parent;
+    if (parent) T.checkParent(name, String(parent));
     const binding = opts["no-bind"] ? null : S.makeBinding(S.context(), { branch: !!opts.branch });
     const board = S.createBoard(name, meta, { binding });
+    if (parent) { const created = S.loadBoard(name); created.parent = String(parent); S.saveBoard(created); }
     let where = "unbound";
     if (binding) {
       where = `bound to ${binding.root}${binding.branch ? ` @ ${binding.branch}` : ""} (key ${binding.key})`;
@@ -180,6 +204,11 @@ const commands = {
     out(`ok: created board ${name}, ${where}${backend === "github" ? " with a private GitHub Project" : ` using ${backend}`}`);
     out(`next: trackerboard show --board ${name}`);
     if (backend !== "github") out(`optional: trackerboard page --board ${name}   (publish a Claude artifact)`);
+  },
+
+  tree({ opts }) {
+    const name = opts.all ? undefined : boardName(opts);
+    for (const line of T.treeLines(name)) out(line);
   },
 
   boards() {
@@ -237,6 +266,8 @@ const commands = {
     }
     const waveId = opts.wave; delete opts.wave;
     const fields = take(opts, B.PHASE_FIELDS);
+    if (fields.owner && fields.session == null) fields.session = sessionFor(fields.owner);
+    if (!fields.session) delete fields.session;
     rejectLeftovers(opts, pos, used);
     const { wave, phase } = B.insertPhase(board, phaseId, fields, { wave: waveId });
     const i = wave.phases.indexOf(phase);
@@ -252,6 +283,10 @@ const commands = {
       const waveId = opts.wave; delete opts.wave;
       const extra = take(opts, ["rename", "to-wave"]);
       const fields = take(opts, B.PHASE_FIELDS);
+      // Taking over a phase records the caller's session; clearing the owner clears it too.
+      if (fields.session == null && fields.owner === "") fields.session = "";
+      else if (fields.session == null && fields.owner) fields.session = sessionFor(fields.owner);
+      if (fields.session === undefined) delete fields.session;
       rejectLeftovers(opts, pos, used);
       if (!Object.keys(fields).length && !Object.keys(extra).length) throw new B.BoardError("update needs at least one field");
       const { wave, phase } = B.updatePhase(board, phaseId, fields, { wave: waveId, rename: extra.rename, toWave: extra["to-wave"] });
@@ -268,7 +303,8 @@ const commands = {
     }
     const fields = take(opts, B.BOARD_FIELDS);
     rejectLeftovers(opts, pos);
-    if (!Object.keys(fields).length) throw new B.BoardError("update needs --phase, --wave, or a board field (--title --subtitle --lede --notes --repo-url)");
+    if (!Object.keys(fields).length) throw new B.BoardError("update needs --phase, --wave, or a board field (--title --subtitle --lede --notes --repo-url --parent)");
+    if (fields.parent != null) T.checkParent(board.name, String(fields.parent));
     Object.assign(board, Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])));
     return commit(board, opts, `updated board ${Object.keys(fields).join(", ")}`);
   },
@@ -337,7 +373,7 @@ const commands = {
     const name = boardName(opts);
     const file = opts.out || path.join(S.outDir(), `${name}.html`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name), { prStates: cachedPrStates(name) })));
+    fs.writeFileSync(file, renderStandalone(await docBody(S.loadBoard(name), { prStates: cachedPrStates(name), tree: T.boardTree(name) })));
     out(`ok: wrote ${file}`);
   },
 };

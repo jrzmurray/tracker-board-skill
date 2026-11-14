@@ -1,6 +1,6 @@
 ---
 description: Change a phase, a wave or the board's own fields
-argument-hint: "--phase P [--status S] [--owner O] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T]"
+argument-hint: "--phase P [--status S] [--owner O] [--session S] [--pr N] [--note T] [--rename P2] | --wave W [--title T] | [--title T] [--parent BOARD]"
 allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 

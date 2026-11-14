@@ -37,19 +37,19 @@ test("GitHub references fill pr/issue without changing human-controlled status",
     ],
     issues: [{ number: 8, title: "R-A-005 tracking issue" }],
   });
-  assert.deepEqual(phase(b, "R-A-001"), { ...phase(b, "R-A-001"), pr: "#10, #14", issue: "#7", status: "todo" });
+  assert.deepEqual(phase(b, "R-A-001"), { ...phase(b, "R-A-001"), pr: "#10, #14", issue: "#7", status: "planned" });
   assert.equal(phase(b, "R-A-002").pr, "#5 merged, #11");
   assert.equal(phase(b, "R-A-002").status, "review");
   assert.equal(phase(b, "R-A-003").status, "blocked");
   assert.equal(phase(b, "R-A-004").status, "done");
-  assert.deepEqual([phase(b, "R-A-005").pr, phase(b, "R-A-005").issue, phase(b, "R-A-005").status], ["#13", "#8", "todo"]);
+  assert.deepEqual([phase(b, "R-A-005").pr, phase(b, "R-A-005").issue, phase(b, "R-A-005").status], ["#13", "#8", "planned"]);
   assert.deepEqual(changes.find((c) => c.id === "R-A-001"), { id: "R-A-001", pr: "#10, #14", issue: "#7" });
   // Running again changes nothing.
   assert.deepEqual(applyGithub(b, { prs: [{ number: 10, title: "R-A-001", isDraft: true }] }), []);
 });
 
 test("PR lifecycle badges are independent of phase status", () => {
-  assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: true }), { status: "todo", label: "Draft" });
+  assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: true }), { status: "planned", label: "Draft" });
   assert.deepEqual(prLifecycle({ state: "OPEN", isDraft: false }), { status: "active", label: "Open" });
   assert.deepEqual(prLifecycle({ state: "OPEN", mergeStateStatus: "CONFLICTING" }), { status: "blocked", label: "Conflicting" });
   assert.deepEqual(prLifecycle({ state: "OPEN", mergeStateStatus: "DIRTY" }), { status: "blocked", label: "Conflicting" });
@@ -62,9 +62,9 @@ test("PR lifecycle badges are independent of phase status", () => {
     { number: 5, state: "MERGED", mergedAt: "2026-01-01" },
     { number: 10, state: "OPEN", isDraft: true },
   ]);
-  assert.deepEqual(states["R-A-001"], [{ number: "10", status: "todo", label: "Draft" }]);
+  assert.deepEqual(states["R-A-001"], [{ number: "10", status: "planned", label: "Draft" }]);
   assert.equal(states["R-A-002"][0].status, "done");
-  assert.equal(phase(b, "R-A-001").status, "todo");
+  assert.equal(phase(b, "R-A-001").status, "planned");
 });
 
 test("body is only searched when asked", () => {
@@ -77,7 +77,7 @@ test("body is only searched when asked", () => {
 test("normalizeBoard fills defaults, accepts aliases and rejects unknown fields", () => {
   const b = B.normalizeBoard({ name: "g", waves: [{ id: "W1", phases: [{ id: "R-1", status: "planned", deps: "" }, { id: "R-2", status: "in_progress", deps: "R-1" }] }] });
   assert.equal(b.title, "g");
-  assert.deepEqual(b.waves[0].phases.map((p) => [p.status, p.deps, p.issue]), [["todo", [], ""], ["active", ["R-1"], ""]]);
+  assert.deepEqual(b.waves[0].phases.map((p) => [p.status, p.deps, p.issue]), [["planned", [], ""], ["active", ["R-1"], ""]]);
   assert.throws(() => B.normalizeBoard({ waves: [{ id: "W", phases: [{ id: "X", leg: "G1" }] }] }), /phase X: unknown field\(s\) leg/);
   assert.throws(() => B.normalizeBoard({ waves: [{ id: "W", phases: [{ id: "X", status: "nope" }] }] }), /phase X: unknown status/);
   assert.throws(() => B.normalizeBoard({ waves: [{ id: "W", phases: [{ id: "X", deps: ["Y"] }] }] }), /depends on missing "Y"/);

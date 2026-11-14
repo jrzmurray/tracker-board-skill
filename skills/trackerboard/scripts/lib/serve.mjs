@@ -67,6 +67,8 @@ const FIELD_LIMITS = {
   prefix: 120,
   lane: 120,
   owner: 300,
+  session: 1_000,
+  parent: 120,
   status: 32,
   note: 4_000,
   req: MAX_TEXT_LENGTH,

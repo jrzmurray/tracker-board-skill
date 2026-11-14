@@ -1,6 +1,6 @@
 ---
 description: Create a board and bind it to this repo
-argument-hint: "<name> [--title T] [--repo-url URL] [--branch] [--no-bind]"
+argument-hint: "<name> [--title T] [--repo-url URL] [--parent BOARD] [--branch] [--no-bind]"
 allowed-tools: Bash(node "*/skills/trackerboard/scripts/trackerboard.mjs" *), Bash(trackerboard *)
 ---
 

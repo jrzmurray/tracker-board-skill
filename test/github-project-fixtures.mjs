@@ -11,6 +11,7 @@ export function makeBoard(phases = [{ id: "P1", title: "First phase" }]) {
     lede: "What ships next",
     notes: "Board notes",
     repoUrl: "https://github.com/acme/roadmap",
+    parent: "",
     waves: [{
       id: "W1",
       title: "Wave One",
@@ -21,7 +22,8 @@ export function makeBoard(phases = [{ id: "P1", title: "First phase" }]) {
         title: phase.title ?? `Phase ${phase.id}`,
         lane: phase.lane ?? "core",
         owner: phase.owner ?? "alex",
-        status: phase.status ?? "todo",
+        session: phase.session ?? "",
+        status: phase.status ?? "planned",
         note: phase.note ?? "short note",
         req: phase.req ?? "R-1",
         issue: phase.issue ?? "#10",

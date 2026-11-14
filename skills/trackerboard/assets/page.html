@@ -6,7 +6,7 @@
 :root{
   --bg:#eef1f4;--paper:#fbfcfd;--ink:#16202b;--muted:#5a6878;--rule:#cfd7e0;--soft:#e3e8ee;
   --accent:#2b59c3;--accent-tint:#dde6f8;
-  --todo:#5a6878;--todo-bg:#e6eaef;--active:#9a5b00;--active-bg:#fbecd2;--review:#6a3fb5;--review-bg:#ece4f8;
+  --planned:#5a6878;--planned-bg:#e6eaef;--planning:#1f6a9a;--planning-bg:#d9eaf6;--active:#9a5b00;--active-bg:#fbecd2;--review:#6a3fb5;--review-bg:#ece4f8;
   --waiting:#4c6070;--waiting-bg:#e2e9ee;--blocked:#b3261e;--blocked-bg:#f9e0dd;--done:#23744a;--done-bg:#dcf0e3;
   --ongoing:#1f6f86;--ongoing-bg:#dbeff4;--external:#7a5a2e;--external-bg:#f1e8da;--dropped:#8792a0;--dropped-bg:#eceff2;
   --pct-none:#b3261e;--pct-low:#c25e00;--pct-mid:#8f7400;--pct-full:#23744a;--glyph-l:42%;
@@ -17,7 +17,7 @@
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
   --accent:#86a8ff;--accent-tint:#22304d;
-  --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
+  --planned:#a3b0be;--planned-bg:#27313c;--planning:#8cc4ee;--planning-bg:#1a3347;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
   --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
   --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
   --pct-none:#ff8f84;--pct-low:#ffa45c;--pct-mid:#e9d45f;--pct-full:#7fd6a2;--glyph-l:68%;
@@ -25,7 +25,7 @@
 :root[data-theme="dark"]{
   --bg:#11161c;--paper:#18202a;--ink:#e4eaf1;--muted:#97a5b5;--rule:#2f3b48;--soft:#232d38;
   --accent:#86a8ff;--accent-tint:#22304d;
-  --todo:#a3b0be;--todo-bg:#27313c;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
+  --planned:#a3b0be;--planned-bg:#27313c;--planning:#8cc4ee;--planning-bg:#1a3347;--active:#f2b75c;--active-bg:#3b2c12;--review:#c3a5f5;--review-bg:#30244a;
   --waiting:#a9bccb;--waiting-bg:#24303a;--blocked:#ff8f84;--blocked-bg:#46201d;--done:#7fd6a2;--done-bg:#1b3a29;
   --ongoing:#7fcde3;--ongoing-bg:#173640;--external:#e0bf8e;--external-bg:#3a2e1d;--dropped:#7f8b98;--dropped-bg:#222a33;
   --pct-none:#ff8f84;--pct-low:#ffa45c;--pct-mid:#e9d45f;--pct-full:#7fd6a2;--glyph-l:68%;
@@ -129,7 +129,15 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 .notes p{margin:0 0 8px;max-width:80ch}
 .empty{text-align:center;padding:48px 20px;color:var(--muted)}
 .empty h2{color:var(--ink);margin-bottom:8px}
-.status-todo{background:var(--todo-bg);color:var(--todo)}.status-active{background:var(--active-bg);color:var(--active)}
+.crumbs{display:flex;flex-wrap:wrap;gap:4px 8px;font:12px var(--mono);color:var(--muted)}
+.crumbs a{text-decoration:none}.crumbs a:hover{text-decoration:underline}.crumbs span[aria-hidden]{opacity:.6}
+.brow{display:grid;grid-template-columns:minmax(120px,1fr) minmax(140px,2fr) auto;gap:6px 14px;align-items:center;padding:10px 4px;border-top:1px solid var(--rule);text-decoration:none;color:var(--ink)}
+.brow:first-of-type{border-top:0}.brow:hover{background:var(--accent-tint)}
+.brow .bname{font-weight:600}.brow .bsub{font:11px var(--mono);color:var(--muted)}
+.brow .count{font:12px var(--mono);color:var(--muted);text-align:right;white-space:nowrap}
+.brow .bar{height:8px}
+@media (max-width:600px){.brow{grid-template-columns:1fr auto}.brow .bar{grid-column:1/-1}}
+.status-planning{background:var(--planning-bg);color:var(--planning)}.status-planned{background:var(--planned-bg);color:var(--planned)}.status-active{background:var(--active-bg);color:var(--active)}
 .status-review{background:var(--review-bg);color:var(--review)}.status-waiting{background:var(--waiting-bg);color:var(--waiting)}
 .status-blocked{background:var(--blocked-bg);color:var(--blocked)}.status-done{background:var(--done-bg);color:var(--done)}
 .status-ongoing{background:var(--ongoing-bg);color:var(--ongoing)}.status-external{background:var(--external-bg);color:var(--external)}
@@ -159,10 +167,22 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 <script type="application/json" id="tb-data">null</script>
 <script>
 (() => {
-  const STATUS = ["active","review","blocked","waiting","todo","ongoing","external","done","dropped"];
-  const LABEL = {todo:"not started",active:"in progress",review:"in review",waiting:"waiting",blocked:"blocked",done:"done",ongoing:"ongoing",external:"external",dropped:"dropped"};
+  const STATUS = ["active","review","blocked","waiting","planned","planning","ongoing","external","done","dropped"];
+  const LABEL = {planning:"planning",planned:"planned",active:"in progress",review:"in review",waiting:"waiting",blocked:"blocked",done:"done",ongoing:"ongoing",external:"external",dropped:"dropped"};
   const app = document.getElementById("app");
   let board = null, openIds = new Set();
+  // Boards saved before planning/planned existed still say todo, not-started, and so on;
+  // the CLI migrates them when it loads a board, but a page reads stored data as-is.
+  const ALIAS = {todo:"planned","not-started":"planned",not_started:"planned",pending:"planned",plan:"planning",drafting:"planning",
+    "in-progress":"active",in_progress:"active",running:"active",wip:"active","in-review":"review",wait:"waiting",block:"blocked",stopped:"blocked",
+    merged:"done",complete:"done",completed:"done",shipped:"done",ext:"external","n/a":"dropped",na:"dropped",cancelled:"dropped",canceled:"dropped",skipped:"dropped"};
+  function fixStatuses(b) {
+    for (const w of (b && b.waves) || []) for (const p of w.phases || []) {
+      const s = String(p.status == null ? "" : p.status).trim().toLowerCase();
+      p.status = STATUS.includes(s) ? s : (ALIAS[s] || "planned");
+    }
+    return b;
+  }
   // Filter: any of the selected statuses (none selected = every status), and
   // the selected owner if one is. Kept per viewer in localStorage.
   let statuses = new Set(), owner = null, dimOthers = false;
@@ -238,10 +258,10 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
   const matches = (p) => (!statuses.size || statuses.has(p.status)) && (owner == null || (p.owner || "") === owner);
 
   function summary(b) {
-    const all = phasesOf(b), n = all.length || 1;
+    const all = phasesOf(b), n = all.filter(({ phase }) => phase.status !== "dropped").length || 1;
     const counts = Object.fromEntries(STATUS.map((s) => [s, 0]));
     all.forEach(({ phase }) => counts[phase.status] = (counts[phase.status] || 0) + 1);
-    const bar = STATUS.filter((s) => counts[s]).map((s) => `<span style="width:${(counts[s] / n) * 100}%;background:var(--${s})" title="${LABEL[s]}: ${counts[s]}"></span>`).join("");
+    const bar = STATUS.filter((s) => counts[s] && s !== "dropped").map((s) => `<span style="width:${(counts[s] / n) * 100}%;background:var(--${s})" title="${LABEL[s]}: ${counts[s]}"></span>`).join("");
     const chips = STATUS.filter((s) => counts[s]).map((s) =>
       `<button class="chip" data-status="${s}" aria-pressed="${statuses.has(s)}"><i style="background:var(--${s})"></i>${LABEL[s]} <b>${counts[s]}</b></button>`).join("");
     return `<section class="panel" aria-label="Status summary"><div class="bar" role="img" aria-label="${all.length} phases by status">${bar}</div><div class="chips">${chips}${filtering() ? `<button class="chip" data-clear>show all</button>` : ""}</div>${ownerKey(all)}</section>`;
@@ -263,11 +283,11 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       const done = ["done", "dropped"].includes(statusOf.get(keyOf(d)));
       return `<a href="#${domId(d)}" data-jump="${esc(d)}" class="${done ? "ok" : ""}">${esc(d)}${done ? " ✓" : ""}</a>`;
     }).join(", ") : `<span style="color:var(--muted)">none</span>`;
-    const fields = [["Requirements", phase.req], ["PR", (phase.pr || "").length > 60 ? phase.pr : ""], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v);
+    const fields = [["Session", /^https:\/\//.test(String(phase.session || "").trim()) ? "" : phase.session], ["Requirements", phase.req], ["PR", (phase.pr || "").length > 60 ? phase.pr : ""], ["Review", phase.review], ["Notes", phase.notes]].filter(([, v]) => v);
     const body = fields.length ? fields.map(([h, v]) => `<div class="field"><h3>${h}</h3>${md(v)}</div>`).join("") : `<div class="field" style="color:var(--muted)">No details recorded.</div>`;
     return `<details class="phase" id="${domId(phase.id)}" ${openIds.has(phase.id) ? "open" : ""}>
       <summary>
-        <div class="pcell"><span class="chev" aria-hidden="true">▸</span><div><span class="pid">${esc(phase.id)}</span>${phase.owner ? ownerGlyph(phase.owner) : ""}<span class="ptitle">${inline(phase.title)}</span></div></div>
+        <div class="pcell"><span class="chev" aria-hidden="true">▸</span><div><span class="pid">${esc(phase.id)}</span>${phase.owner ? ownerLink(phase) : ""}<span class="ptitle">${inline(phase.title)}</span></div></div>
         <div>${pill(phase.status)}${phase.note ? `<span class="snote">${inline(phase.note)}</span>` : ""}</div>
         <div class="deps">${deps}</div>
         ${hasIssues ? `<div class="prc">${phase.issue ? inline(/^\d+$/.test(String(phase.issue).trim()) ? "#" + String(phase.issue).trim() : phase.issue, "issues") : `<span style="color:var(--muted)">—</span>`}</div>` : ""}
@@ -286,9 +306,9 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const cols = `<div class="cols"><span>Phase</span><span>Status</span><span>Depends on</span>${hasIssues ? "<span>Issue</span>" : ""}<span>PR</span></div>`;
     // done count coloured by completion: 0% red, 1-50% orange, 51-99% yellow, 100% green
     const tally = (ps) => {
-      const done = ps.filter((p) => p.status === "done").length, pct = ps.length ? done / ps.length * 100 : null;
+      const live = ps.filter((p) => p.status !== "dropped"), done = live.filter((p) => p.status === "done").length, pct = live.length ? done / live.length * 100 : null;
       const cls = pct == null ? "" : pct === 0 ? "pct-none" : pct <= 50 ? "pct-low" : pct < 100 ? "pct-mid" : "pct-full";
-      return `<span class="count ${cls}" title="${pct == null ? "" : Math.round(pct) + "% done"}">${done}/${ps.length} done</span>`;
+      return `<span class="count ${cls}" title="${pct == null ? "" : Math.round(pct) + "% done"}">${done}/${live.length} done</span>`;
     };
     return b.waves.map((w) => {
       const lanes = new Map();
@@ -397,6 +417,11 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     '<path d="M8 .8l2.1 5.1 5.5.3-4.3 3.5 1.5 5.3L8 12 3.2 15l1.5-5.3L.4 6.2l5.5-.3z"/>',
     '<path d="M5.5 1h5v4.5H15v5h-4.5V15h-5v-4.5H1v-5h4.5z"/>',
   ];
+  // The owner mark links to the agent's session when one is recorded as an https URL.
+  function ownerLink(phase, size) {
+    const g = ownerGlyph(phase.owner, size), s = String(phase.session || "").trim();
+    return /^https:\/\//.test(s) ? `<a class="sess" href="${esc(s)}" target="_blank" rel="noopener" title="Open session" aria-label="Open ${esc(phase.owner)}'s session">${g}</a>` : g;
+  }
   function ownerMark(owner) {
     let h = 0x811c9dc5;
     for (const c of String(owner)) { h ^= c.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
@@ -592,6 +617,27 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     new ResizeObserver(() => { if (!document.body.contains(box)) return; if (!gv.touched) { size(); reset(); } else apply(); }).observe(box);
   }
 
+  const hrefOk = (u) => /^(https:\/\/|[\w.-]+\.html$)/.test(String(u));
+  function crumbs(b) {
+    const t = b.tree; if (!t || !t.ancestors.length) return "";
+    const parts = t.ancestors.map((a) => hrefOk(a.url) ? `<a href="${esc(a.url)}">${esc(a.title)}</a>` : `<span>${esc(a.title)}</span>`);
+    return `<nav class="crumbs" aria-label="Breadcrumb">${parts.join('<span aria-hidden="true">›</span>')}<span aria-hidden="true">›</span><span aria-current="page">${esc(b.title || b.name)}</span></nav>`;
+  }
+  function meter(counts, total) {
+    const n = total || 1;
+    return `<div class="bar" role="img" aria-label="${total} phases by status">${STATUS.filter((s) => counts[s] && s !== "dropped").map((s) => `<span style="width:${(counts[s] / n) * 100}%;background:var(--${s})" title="${LABEL[s]}: ${counts[s]}"></span>`).join("")}</div>`;
+  }
+  function boardsPanel(b) {
+    const t = b.tree; if (!t || !t.children.length) return "";
+    const r = t.rollup;
+    const pct = (x) => x.total ? Math.round(x.done / x.total * 100) + "%" : "–";
+    const rows = t.children.map((c) => {
+      const inner = `<div><div class="bname">${esc(c.title)}</div><div class="bsub">${esc(c.name)}${c.children ? ` · ${c.children} sub-board${c.children === 1 ? "" : "s"}` : ""}</div></div>${meter(c.counts, c.total)}<span class="count">${c.done}/${c.total} · ${pct(c)}</span>`;
+      return hrefOk(c.url) ? `<a class="brow" href="${esc(c.url)}">${inner}</a>` : `<div class="brow">${inner}</div>`;
+    }).join("");
+    return `<section class="panel" aria-label="Sub-boards"><div class="wavehead"><h2>Boards</h2><span class="count">${r.done}/${r.total} done · ${pct(r)}</span></div>${meter(r.counts, r.total)}<div style="margin-top:8px">${rows}</div></section>`;
+  }
+
   function render() {
     if (!board) return;
     hideTip();
@@ -599,17 +645,20 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const updated = board.updatedAt ? `Updated ${fmtTime(board.updatedAt)}` : "";
     hasIssues = phasesOf(board).some(({ phase }) => phase.issue);
     app.classList.toggle("with-issue", hasIssues);
+    const bare = !phasesOf(board).length && !!board.tree?.children?.length; // a pure roll-up board
     app.innerHTML = `
       <header>
+        ${crumbs(board)}
         <div class="eyebrow">${inline(board.subtitle || board.name)}</div>
         <h1>${inline(board.title || board.name)}</h1>
         ${board.lede ? `<div class="lede">${md(board.lede)}</div>` : ""}
         <div class="stamp">${updated}</div>
       </header>
-      ${summary(board)}
-      <div class="tools"><button class="btn" id="tb-expand">Expand all</button><button class="btn" id="tb-collapse">Collapse all</button></div>
-      ${board.waves.length ? waves(board) : `<section class="panel empty"><h2>No phases yet</h2><p>Add one with <code>trackerboard insert --phase P1 --title "…"</code>.</p></section>`}
-      ${graph(board)}
+      ${boardsPanel(board)}
+      ${bare ? "" : summary(board)}
+      ${bare ? "" : `<div class="tools"><button class="btn" id="tb-expand">Expand all</button><button class="btn" id="tb-collapse">Collapse all</button></div>`}
+      ${bare ? "" : board.waves.length ? waves(board) : `<section class="panel empty"><h2>No phases yet</h2><p>Add one with <code>trackerboard insert --phase P1 --title "…"</code>.</p></section>`}
+      ${bare ? "" : graph(board)}
       ${board.log && board.log.length ? `<section class="panel" aria-label="Change log"><h2 style="margin-bottom:10px">Recent changes</h2><ul class="log">${board.log.map((e) => `<li><time datetime="${esc(e.at)}">${fmtTime(e.at)}</time><div>${inline(e.text)}</div></li>`).join("")}</ul></section>` : ""}
       ${board.notes ? `<section class="panel notes" aria-label="Notes"><h2 style="margin-bottom:10px">Notes</h2>${md(board.notes)}</section>` : ""}`;
     initGraph();
@@ -662,6 +711,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
     const j = e.target.closest && e.target.closest(".gnode");
     if (j && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); jump(j.dataset.jump); }
   });
+
   app.addEventListener("toggle", (e) => {
     const d = e.target;
     if (!d.classList || !d.classList.contains("phase")) return;
@@ -679,7 +729,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
 
   try {
     const embedded = JSON.parse(document.getElementById("tb-data").textContent);
-    if (embedded) { board = embedded; render(); }
+    if (embedded) { board = fixStatuses(embedded); render(); }
   } catch {}
 
   // Published page: the board lives in state.json, published next to this
@@ -693,7 +743,7 @@ h2{font:700 17px/1.3 var(--display);margin:0;text-wrap:balance}
       if (raw === lastRaw) return;
       const next = JSON.parse(raw);
       lastRaw = raw;
-      board = next;
+      board = fixStatuses(next);
       render();
     } catch {}
   }

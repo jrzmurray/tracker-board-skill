@@ -110,8 +110,25 @@ export function createGeneratedCommands({ boardName, out, commit }) {
       const repo = repoSlug(board, opts.repo);
       const limit = opts.limit || 1000;
       const fields = ["number", "title", "labels", ...(sources.includes("body") ? ["body"] : [])];
-      const prs = runGhJson(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "state", "mergedAt", "mergeStateStatus", "closingIssuesReferences"].join(",")], { repo, limit, state: "all" });
-      const issues = runGhJson(["issue", "list", "--json", fields.join(",")], { repo, limit, state: "open" });
+      // --gh-cache FILE: reuse one fetch across many runs (a board hierarchy is
+      // overlaid board by board). The cache is keyed by repo, limit and sources, and
+      // expires after 10 minutes (--gh-cache-ttl SECONDS to change it).
+      const cacheKey = JSON.stringify([repo, limit, sources]);
+      let cached = null;
+      if (opts["gh-cache"]) {
+        try {
+          const ttlMs = (Number(opts["gh-cache-ttl"]) || 600) * 1000;
+          const hit = JSON.parse(fs.readFileSync(opts["gh-cache"], "utf8"));
+          if (hit.key === cacheKey && Date.now() - fs.statSync(opts["gh-cache"]).mtimeMs < ttlMs) cached = hit;
+        } catch { /* no usable cache: fetch */ }
+      }
+      const prs = cached?.prs ?? runGhJson(["pr", "list", "--json", [...fields, "headRefName", "isDraft", "state", "mergedAt", "mergeStateStatus", "closingIssuesReferences"].join(",")], { repo, limit, state: "all" });
+      const issues = cached?.issues ?? runGhJson(["issue", "list", "--json", fields.join(",")], { repo, limit, state: "open" });
+      if (opts["gh-cache"] && !cached) {
+        const tmp = `${opts["gh-cache"]}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ key: cacheKey, prs, issues }));
+        fs.renameSync(tmp, opts["gh-cache"]);
+      }
       const prStates = G.derivePrStates(board, prs);
       const changes = G.applyGithub(board, { prs, issues }, { sources });
       const scanned = `${prs.length} PRs and ${issues.length} open issues${repo ? ` in ${repo}` : ""}`;

@@ -7,11 +7,12 @@ export class BoardError extends Error {}
 export const SCHEMA = 1;
 
 export const STATUSES = [
-  "todo", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped",
+  "planning", "planned", "active", "review", "waiting", "blocked", "done", "ongoing", "external", "dropped",
 ];
 
-const STATUS_ALIASES = {
-  "not-started": "todo", "not_started": "todo", "pending": "todo", "planned": "todo",
+export const STATUS_ALIASES = {
+  "todo": "planned", "not-started": "planned", "not_started": "planned", "pending": "planned",
+  "plan": "planning", "drafting": "planning",
   "in-progress": "active", "in_progress": "active", "running": "active", "wip": "active",
   "in-review": "review",
   "wait": "waiting",
@@ -22,9 +23,9 @@ const STATUS_ALIASES = {
 };
 
 // Phase fields settable from the CLI. `deps` is handled by the graph helpers.
-export const PHASE_FIELDS = ["title", "lane", "owner", "status", "note", "req", "issue", "pr", "review", "notes", "deps"];
+export const PHASE_FIELDS = ["title", "lane", "owner", "session", "status", "note", "req", "issue", "pr", "review", "notes", "deps"];
 export const WAVE_FIELDS = ["title", "prefix", "notes"];
-export const BOARD_FIELDS = ["title", "subtitle", "lede", "notes", "repoUrl"];
+export const BOARD_FIELDS = ["title", "subtitle", "lede", "notes", "repoUrl", "parent"];
 
 export const LOG_LIMIT = 40;
 
@@ -33,6 +34,17 @@ export function normalizeStatus(value) {
   if (STATUSES.includes(v)) return v;
   if (STATUS_ALIASES[v]) return STATUS_ALIASES[v];
   throw new BoardError(`unknown status "${value}"; expected one of: ${STATUSES.join(", ")}`);
+}
+
+// Rewrites legacy status spellings (`todo`) to their canonical names in
+// place; returns true when anything changed. Called on every board load.
+export function migrateStatuses(board) {
+  let changed = false;
+  for (const { phase } of allPhases(board)) {
+    const next = STATUS_ALIASES[String(phase.status).trim().toLowerCase()];
+    if (next && !STATUSES.includes(phase.status)) { phase.status = next; changed = true; }
+  }
+  return changed;
 }
 
 export function newBoard(name, { title } = {}) {
@@ -44,6 +56,7 @@ export function newBoard(name, { title } = {}) {
     lede: "",
     notes: "",
     repoUrl: "",
+    parent: "",
     waves: [],
     log: [],
     updatedAt: new Date().toISOString(),
@@ -245,7 +258,7 @@ export function insertPhase(board, phaseId, fields = {}, { wave: waveId } = {}) 
     throw new BoardError(`phase "${phaseId}" already exists in wave "${wave.id}"; use update`);
   }
   if (existing.length) throw new BoardError(`phase "${phaseId}" already exists in wave "${existing[0].wave.id}"; ids are unique per board`);
-  const phase = { id: String(phaseId), title: "", lane: "", owner: "", status: "todo", note: "", req: "", issue: "", pr: "", review: "", notes: "", deps: [] };
+  const phase = { id: String(phaseId), title: "", lane: "", owner: "", session: "", status: "planned", note: "", req: "", issue: "", pr: "", review: "", notes: "", deps: [] };
   applyFields(phase, fields, PHASE_FIELDS, "phase");
   wave.phases.splice(insertionIndex(wave.phases, phase.id), 0, phase);
   if (fields.deps != null) setDeps(board, phase.id, parseList(fields.deps));
@@ -369,7 +382,7 @@ export function toMermaid(board) {
 export function readyPhases(board) {
   const status = new Map(allPhases(board).map(({ phase }) => [key(phase.id), phase.status]));
   return allPhases(board)
-    .filter(({ phase }) => ["todo", "waiting"].includes(phase.status))
+    .filter(({ phase }) => ["planned", "waiting"].includes(phase.status))
     .filter(({ phase }) => phase.deps.every((d) => ["done", "dropped"].includes(status.get(key(d)))))
     .map(({ phase }) => phase.id);
 }
@@ -422,7 +435,7 @@ export function normalizeBoard(input) {
       const phase = { id: String(p.id) };
       for (const f of PHASE_FIELDS) if (f !== "deps") phase[f] = str(p[f], perr, f);
       try {
-        phase.status = normalizeStatus(phase.status || "todo");
+        phase.status = normalizeStatus(phase.status || "planned");
       } catch (e) {
         throw perr(e.message);
       }

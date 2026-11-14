@@ -23,7 +23,7 @@ Run `trackerboard` if it is on `PATH`; otherwise run `node <trackerboard install
 ```
 trackerboard show [--phase P] [--json]
 trackerboard show [--wave W] [--lane L] [--status S,S] [--owner O] [--ids | --pr-list | --json]
-trackerboard insert --phase P0.1 [--wave W] --title "…" [--lane L] [--status todo] [--deps P0]
+trackerboard insert --phase P0.1 [--wave W] --title "…" [--lane L] [--status planned] [--deps P0]
 trackerboard update --phase P0.1 --status review --pr "#2933" --note "round 1" --log "P0.1 in review"
 trackerboard update --phase P0.1 --rename P0.2 | --to-wave B
 trackerboard delete P0.1
@@ -36,7 +36,7 @@ trackerboard github [--dry-run]
 ```
 
 - Phase fields: `--title --lane --owner --status --note --req --issue --pr --review --notes --deps`. `--issue` is the GitHub issue the phase works (`#1234`). `--req`, `--review` and `--notes` are the expandable details. A value of `@file.md` reads the field from a file, and `-` reads it from stdin. Field text is markdown, not HTML: `` `code` `` for identifiers, commands and paths, `**bold**`, `*italic*`, `[text](url)`, `#1234`; the expandable fields also take paragraphs, headings, lists, tables, quotes and fenced code blocks.
-- Status: `todo active review waiting blocked done ongoing external dropped`. Aliases such as `merged` and `in-progress` are accepted.
+- Status: `planning planned active review waiting blocked done ongoing external dropped`. Aliases such as `merged` and `in-progress` are accepted.
 - A phase's position comes from its id. `P0.1` or `P0-1` goes right after `P0`, even if `P1` exists. Insert never overwrites: it fails if the id already exists.
 - `--wave` is optional. A new phase goes to the wave of its parent id, then to a wave whose prefix matches, then to the only wave.
 - Deleting a phase removes it from every other phase's deps.
@@ -83,3 +83,10 @@ The local CLI works without Claude. This section applies only to a board linked 
   - **Publish:** make the printed `publish_files` call (`mcp__claude-artifacts__publish_files`; it uploads `state.json` from disk, so no board data goes through you), then run the printed `trackerboard synced …` with the version from the result. Open pages pick the change up within 30 seconds.
   - **Version mismatch:** someone published in between. Refresh as above, then publish the step that `pull` prints. Nothing needs to be redone.
 - **Other harnesses:** there is no refresh or publish step, even on a linked board. Just edit; the CLI says `saved locally`. The active backend is the source of truth. The JSON backend coordinates agents on this machine with a lock. `trackerboard render` writes a static HTML snapshot to `~/.trackerboard/out/<board>.html`.
+
+## Hierarchy and sessions
+
+- Boards nest: `trackerboard create <name> --parent <board>` (or `update --parent B`, `--parent ""` clears). A repo board holds sprint boards, which hold lane/agent boards. Progress rolls up from leaf phase counts; `dropped` phases are excluded from every total. A board with children is a roll-up: its own phases act as milestones. `trackerboard tree [--board B | --all]` prints the outline.
+- Pages show breadcrumbs to ancestors and, on a parent, a Boards panel with a progress meter per child linking to its page (the linked artifact if there is one, else `<name>.page.html` beside it).
+- `--session <https URL or id>` on a phase records the agent session working it; the owner mark on the page links to it. When you set `--owner claude` without `--session`, trackerboard records the calling session from the environment (`CLAUDE_CODE_SESSION_ID`, inherited through bash and scripts) as `claude:<id>`; any other owner records no session (and drops a stale one), because the caller's session is not that agent's; set `TRACKERBOARD_SESSION_URL=https://…/{id}` to store a clickable URL instead. Clearing the owner clears the session.
+- `planning` (plan being written) and `planned` (approved, not started) replace `todo`; stored `todo`/`not-started`/`pending` migrate to `planned` on load.

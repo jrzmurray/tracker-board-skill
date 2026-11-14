@@ -32,7 +32,7 @@ test("board resolves from the cwd, worktrees included, and throws when ambiguous
   run(["create", "alpha"]);
   run(["insert", "--phase", "P1", "--title", "first"]);
   fs.mkdirSync(path.join(repo, "sub"));
-  assert.match(run(["show"], { cwd: path.join(repo, "sub") }).stdout, /P1 +todo +first/);
+  assert.match(run(["show"], { cwd: path.join(repo, "sub") }).stdout, /P1 +planned +first/);
 
   git("worktree", "add", "-q", path.join(dir, "wt"), "-b", "feature");
   assert.match(run(["show"], { cwd: path.join(dir, "wt") }).stdout, /^alpha:/);
@@ -169,7 +169,7 @@ test("import creates a board from JSON and refuses to overwrite", () => {
   const file = path.join(dir, "b.json");
   fs.writeFileSync(file, run(["show", "--board", "src", "--json"]).stdout);
   assert.match(run(["import", "copy", "--from", file]).stdout, /imported copy \(2 phases\)/);
-  assert.match(run(["show"]).stdout, /P2 +todo +← P1/);
+  assert.match(run(["show"]).stdout, /P2 +planned +← P1/);
   assert.match(run(["import", "copy", "--from", file], { ok: false }).stderr, /already exists/);
 });
 
@@ -177,7 +177,7 @@ test("owner is a phase field: set, shown, cleared", () => {
   const { run } = sandbox();
   run(["create", "b"]);
   run(["insert", "--phase", "P1", "--title", "first", "--owner", "builder-3"]);
-  assert.match(run(["show"]).stdout, /P1 +todo +first +@builder-3/);
+  assert.match(run(["show"]).stdout, /P1 +planned +first +@builder-3/);
   assert.match(run(["show", "--phase", "P1"]).stdout, /owner builder-3/);
   run(["update", "--phase", "P1", "--issue", "#77"]);
   assert.match(run(["show", "--phase", "P1"]).stdout, /issue: #77/);
@@ -215,7 +215,7 @@ test("refresh/pull merges a concurrent publish with unpublished local changes", 
   assert.equal(fs.existsSync(path.join(home, "remote", "b", "state.json")), false);
   let show = run(["show"]).stdout;
   assert.match(show, /P1 +done/);
-  assert.match(show, /P2 +todo .*@me/);
+  assert.match(show, /P2 +planned .*@me/);
   assert.match(run(["pull", "--version", "v2"]).stdout, /current at artifact version v2/);
   // A moved version with no downloaded document says how to read it.
   const unread = run(["pull", "--version", "v9"], { ok: false });
@@ -354,7 +354,7 @@ test("show filters by lane, status and owner, and lists ids or PRs", () => {
   assert.match(all, /no lane  0\/1 done\n    P4 /);
   assert.equal(run(["show", "--lane", "a", "--ids"]).stdout, "P1\nP2\n");
   assert.equal(run(["show", "--lane", "", "--ids"]).stdout, "P4\n");
-  assert.equal(run(["show", "--status", "todo,blocked", "--ids"]).stdout, "P2\nP3\nP4\n");
+  assert.equal(run(["show", "--status", "planned,blocked", "--ids"]).stdout, "P2\nP3\nP4\n");
   assert.equal(run(["show", "--owner", "x", "--ids"]).stdout, "P3\n");
   assert.match(run(["show", "--pr-list"]).stdout, /^P1  done +#11\nP3  blocked +#13\n$/);
   const lane = run(["show", "--lane", "B"]).stdout;
@@ -377,7 +377,7 @@ test("import --replace updates a board from regenerated JSON and logs the change
   assert.match(show, /R-1 +done .*@agent-7/);
   assert.match(show, /R-3 +active/);
   assert.doesNotMatch(show, /R-2 /);
-  assert.match(JSON.parse(run(["show", "--json"]).stdout).log[0].text, /import: 1 status change\(s\): R-1 todo → done; 1 added: R-3; 1 removed: R-2/);
+  assert.match(JSON.parse(run(["show", "--json"]).stdout).log[0].text, /import: 1 status change\(s\): R-1 planned → done; 1 added: R-3; 1 removed: R-2/);
   assert.match(run(["import", "--from", file, "--replace", "--keep", "owner"]).stdout, /already matches/);
   assert.match(run(["import", "gen", "--from", file], { ok: false }).stderr, /already exists; pass --replace/);
   assert.match(run(["import", "--from", file], { ok: false }).stderr, /import needs a board name/);
@@ -400,9 +400,9 @@ esac
   run(["insert", "--phase", "R-1"]);
   run(["insert", "--phase", "R-2"]);
   assert.match(run(["github", "--dry-run"], env).stdout, /R-1: pr #41, issue #40\ndry run/);
-  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[todo\]/);
+  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[planned\]/);
   assert.match(run(["github"], env).stdout, /1 phase\(s\) linked from 1 PRs and 1 open issues in acme\/widgets/);
-  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[todo\][\s\S]*issue: #40[\s\S]*pr: #41/);
+  assert.match(run(["show", "--phase", "R-1"]).stdout, /\[planned\][\s\S]*issue: #40[\s\S]*pr: #41/);
   assert.match(fs.readFileSync(path.join(dir, "gh.log"), "utf8"), /pr list --json .*closingIssuesReferences --repo acme\/widgets --state all/);
   assert.match(run(["github"], env).stdout, /no changes/);
 
@@ -410,7 +410,7 @@ esac
   const file = path.join(dir, "gen.json");
   fs.writeFileSync(file, JSON.stringify({ repoUrl: "https://github.com/acme/widgets", waves: [{ id: "main", phases: [{ id: "R-1" }, { id: "R-2" }] }] }));
   assert.match(run(["github", "--file", file], env).stdout, /1 phase\(s\) in .*gen\.json updated/);
-  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "todo");
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).waves[0].phases[0].status, "planned");
   assert.match(run(["import", "b", "--from", file, "--replace"]).stdout, /already matches/);
 });
 
@@ -440,7 +440,7 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   assert.equal(JSON.parse(fs.readFileSync(recovery, "utf8")).waves[0].phases[0].title, "before migration");
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "sqlite");
   assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
-  assert.match(state.run(["show"], env).stdout, /P1 +todo +before migration/);
+  assert.match(state.run(["show"], env).stdout, /P1 +planned +before migration/);
 
   state.run(["update", "--phase", "P1", "--title", "edited in SQLite"], env);
   const detached = state.run(["refresh"], { ...env, ok: false });
@@ -451,7 +451,7 @@ test("migration verifies SQLite, detaches Claude publishing, and exports active 
   assert.match(exported.stdout, /read-back verified/);
   assert.equal(JSON.parse(state.run(["backend", "--json"], env).stdout).backend, "json");
   assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.local.json"), "utf8")).boardId, initialBoardId);
-  assert.match(state.run(["show"], env).stdout, /P1 +todo +edited in SQLite/);
+  assert.match(state.run(["show"], env).stdout, /P1 +planned +edited in SQLite/);
   assert.match(state.run(["migrate", "--to", "json"], env).stdout, /already uses json/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(state.home, "boards", "migrate-me.json"), "utf8")).waves[0].phases[0].title, "edited in SQLite");
 });

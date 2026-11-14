@@ -5,7 +5,8 @@ import * as core from "./github-project-core.mjs";
 const { PROJECT_FIELDS, fieldByName, fieldOptions, fieldType, graphql, optionName } = core;
 
 const STATUS_OPTION_STYLE = {
-  todo: { color: "GRAY", description: "Not yet started." },
+  planning: { color: "ORANGE", description: "Plan being written." },
+  planned: { color: "GRAY", description: "Approved, not yet started." },
   active: { color: "BLUE", description: "Work is in progress." },
   review: { color: "PURPLE", description: "Awaiting review." },
   waiting: { color: "YELLOW", description: "Waiting on external input or a dependency." },
@@ -17,7 +18,7 @@ const STATUS_OPTION_STYLE = {
 };
 
 const EXISTING_STATUS_NAMES = {
-  todo: ["todo", "to do", "not started", "not-started"],
+  planned: ["planned", "todo", "to do", "not started", "not-started"],
   active: ["active", "in progress", "in-progress"],
   done: ["done", "complete", "completed"],
 };
@@ -63,7 +64,7 @@ export function createGitHubProjectFieldManager({ client, readRemote, rereadBefo
           field = fieldByName(current.fields, definition.name);
           const refreshed = fieldOptions(field).map((option) => optionName(option).toLowerCase());
           if (STATUSES.some((status) => !refreshed.includes(status)) || refreshed.length !== STATUSES.length) {
-            throw new BoardError("GitHub Project Status field could not be configured with all nine canonical Trackerboard statuses.");
+            throw new BoardError("GitHub Project Status field could not be configured with all canonical Trackerboard statuses.");
           }
         }
       }
